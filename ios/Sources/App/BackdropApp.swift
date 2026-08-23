@@ -3,24 +3,39 @@ import BackdropCore
 
 @main
 struct BackdropApp: App {
+    @State private var model: AppModel
+
+    init() {
+        _model = State(initialValue: AppModel(launch: .fromUserDefaults()))
+    }
+
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                BackdropBackground()
-                VStack(spacing: Theme.Spacing.m) {
-                    Image(systemName: "play.rectangle.on.rectangle.fill")
-                        .font(.system(size: 48))
-                    Text("Backdrop")
-                        .font(.largeTitle.bold())
-                    Text(VideoTitleFormatter.durationLabel(3723))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(Theme.Colors.textSecondary)
-                }
-                .padding(Theme.Spacing.xl)
-                .glassSurface()
+            RootView()
+                .environment(model)
+                .preferredColorScheme(.dark)
+                .tint(Theme.Colors.accent)
+        }
+    }
+}
+
+struct RootView: View {
+    @Environment(AppModel.self) private var model
+    @Namespace private var zoomNamespace
+
+    var body: some View {
+        @Bindable var model = model
+        Group {
+            if model.access.canRead {
+                LibraryView(zoomNamespace: zoomNamespace)
+            } else {
+                PermissionGateView()
             }
-            .preferredColorScheme(.dark)
-            .tint(Theme.Colors.accent)
+        }
+        .animation(Theme.Motion.spring, value: model.access)
+        .fullScreenCover(isPresented: $model.isPlayerPresented) {
+            PlayerScreen()
+                .navigationTransition(.zoom(sourceID: model.zoomSourceID, in: zoomNamespace))
         }
     }
 }
