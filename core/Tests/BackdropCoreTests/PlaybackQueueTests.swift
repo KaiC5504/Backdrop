@@ -114,6 +114,19 @@ import Testing
         #expect(!q.hasNext)
     }
 
+    @Test func moveUpcomingHandlesMultiSelectMoves() {
+        var q = PlaybackQueue(items: [a, b, c, d], startingAt: 0)
+        // upcoming = [b, c, d]; what a multi-select List move produces.
+        q.moveUpcoming(fromOffsets: IndexSet([0, 2]), toOffset: 1)
+        #expect(q.upcoming.map(\.item) == [b, d, c])
+    }
+
+    @Test func removeUpcomingOutOfRangeIsNoOp() {
+        var q = PlaybackQueue(items: [a, b, c], startingAt: 0)
+        q.removeUpcoming(atOffsets: IndexSet(integer: 5))
+        #expect(q.upcoming.map(\.item) == [b, c])
+    }
+
     @Test func clearEmpties() {
         var q = PlaybackQueue(items: [a, b], startingAt: 1)
         q.clear()

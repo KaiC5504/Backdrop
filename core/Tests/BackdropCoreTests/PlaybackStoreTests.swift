@@ -57,6 +57,18 @@ import Testing
         #expect(store.snapshot.positions.isEmpty)
     }
 
+    @Test func writeAfterCorruptFileOverwritesIt() throws {
+        let url = prepared()
+        try Data("not json".utf8).write(to: url)
+        let store = PlaybackStore(fileURL: url)
+        #expect(store.loadError != nil)
+        store.setPosition(42, for: "x")
+
+        let reloaded = PlaybackStore(fileURL: url)
+        #expect(reloaded.position(for: "x") == 42)
+        #expect(reloaded.loadError == nil)
+    }
+
     @Test func missingDirectoryIsReportedNotFatal() {
         let url = tempURL() // parent never created
         let store = PlaybackStore(fileURL: url)
