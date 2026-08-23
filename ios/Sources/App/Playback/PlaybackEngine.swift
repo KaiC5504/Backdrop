@@ -126,12 +126,11 @@ final class PlaybackEngine {
     }
 
     func seek(to seconds: TimeInterval) {
-        guard current != nil else { return }
+        guard current != nil, player.currentItem != nil, let itemID = attachedItemID else { return }
         let upper = duration > 0 ? duration : seconds
         let clamped = max(0, min(seconds, upper))
         time = clamped
         let generation = loadGeneration
-        let itemID = attachedItemID
         isSeeking = true
         player.seek(to: CMTime(seconds: clamped, preferredTimescale: Self.timescale),
                     toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
@@ -189,10 +188,13 @@ final class PlaybackEngine {
         prefetchTask?.cancel()
         artworkTask?.cancel()
         prefetched = nil
+        prefetchTask = nil
+        prefetchedID = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
         attachedItemID = nil
         isPlaying = false
+        isSeeking = false
         isBuffering = false
         current = nil
         queue.clear()
@@ -258,6 +260,7 @@ final class PlaybackEngine {
             attachedItemID = nil
             current = nil
             isPlaying = false
+            isSeeking = false
             time = 0
             duration = 0
             nowPlaying.clear()
@@ -294,8 +297,10 @@ final class PlaybackEngine {
                     log.log("engine.gap \(String(format: "%.2f", waited))s waiting for prefetch \(item.id)")
                 }
                 guard generation == loadGeneration else { return }
-                prefetched = nil
-                prefetchedID = nil
+                if prefetchedID == item.id {
+                    prefetched = nil
+                    prefetchedID = nil
+                }
                 if let ready {
                     loadTask = nil
                     attach(ready, for: item, generation: generation, autoplay: autoplay)
@@ -339,6 +344,7 @@ final class PlaybackEngine {
     }
 
     private func attach(_ playerItem: AVPlayerItem, for item: VideoItem, generation: Int, autoplay: Bool) {
+        isSeeking = false
         playerItem.audioTimePitchAlgorithm = .timeDomain
         player.replaceCurrentItem(with: playerItem)
         attachedItemID = item.id

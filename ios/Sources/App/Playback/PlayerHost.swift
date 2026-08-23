@@ -105,8 +105,12 @@ extension PlayerHost: AVPlayerViewControllerDelegate {
             pictureInPictureStarting = false
             log.log("pip.failed \(error.localizedDescription)")
             if controller.player == nil {
-                controller.player = player
-                log.log("pip.failed reattached")
+                if UIApplication.shared.applicationState == .background {
+                    log.log("pip.failed left detached (background)")
+                } else {
+                    controller.player = player
+                    log.log("pip.failed reattached")
+                }
             }
         }
     }
