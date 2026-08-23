@@ -30,14 +30,19 @@ final class PlaybackEngine {
 
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var failObserver: NSObjectProtocol?
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var loadTask: Task<Void, Never>?
-    @ObservationIgnored private var prefetchTask: Task<Void, Never>?
+    @ObservationIgnored private var prefetchTask: Task<AVPlayerItem?, Never>?
     @ObservationIgnored private var artworkTask: Task<Void, Never>?
     @ObservationIgnored private var prefetched: (id: String, item: AVPlayerItem)?
+    @ObservationIgnored private var prefetchedID: String?
+    @ObservationIgnored private var attachedItemID: String?
     @ObservationIgnored private var lastSavedAt: TimeInterval = 0
+    @ObservationIgnored private var lastExternalPause: Date = .distantPast
     @ObservationIgnored private var resumeAfterInterruption = false
+    @ObservationIgnored private var isSeeking = false
 
     private static let saveInterval: TimeInterval = 5
     private static let timescale: CMTimeScale = 600
@@ -75,6 +80,11 @@ final class PlaybackEngine {
             forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
         ) { [weak self] note in
             MainActor.assumeIsolated { self?.itemDidPlayToEnd(note.object as? AVPlayerItem) }
+        }
+        failObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime, object: nil, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.itemDidFail(note) }
         }
         statusObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
             // KVO thread is unspecified; read the live status on the main actor rather
@@ -120,11 +130,17 @@ final class PlaybackEngine {
         let upper = duration > 0 ? duration : seconds
         let clamped = max(0, min(seconds, upper))
         time = clamped
+        let generation = loadGeneration
+        let itemID = attachedItemID
+        isSeeking = true
         player.seek(to: CMTime(seconds: clamped, preferredTimescale: Self.timescale),
-                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             Task { @MainActor [weak self] in
-                self?.publishNowPlaying()
-                self?.saveProgress()
+                guard let self else { return }
+                isSeeking = false
+                guard finished, generation == loadGeneration else { return }
+                publishNowPlaying()
+                saveProgress(itemID: itemID, at: clamped)
             }
         }
     }
@@ -149,6 +165,7 @@ final class PlaybackEngine {
     }
 
     func setSpeed(_ value: Double) {
+        let value = min(max(value, 0.5), 2.0)
         speed = value
         store.speed = value
         player.defaultRate = Float(value)
@@ -174,6 +191,7 @@ final class PlaybackEngine {
         prefetched = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
+        attachedItemID = nil
         isPlaying = false
         isBuffering = false
         current = nil
@@ -235,7 +253,14 @@ final class PlaybackEngine {
         let generation = loadGeneration
         loadTask?.cancel()
         guard let item = queue.current else {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            attachedItemID = nil
             current = nil
+            isPlaying = false
+            time = 0
+            duration = 0
+            nowPlaying.clear()
             return
         }
         current = item
@@ -245,33 +270,70 @@ final class PlaybackEngine {
         isBuffering = true
         errorMessage = nil
         artwork = nil
+        nowPlaying.setArtwork(nil)
         log.log("engine.load \(item.id) gen=\(generation)")
         publishNowPlaying()
         loadArtwork(for: item)
 
         if let ready = prefetched, ready.id == item.id {
             prefetched = nil
+            prefetchedID = nil
             attach(ready.item, for: item, generation: generation, autoplay: autoplay)
             return
         }
+        if prefetchedID == item.id, let task = prefetchTask {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            attachedItemID = nil
+            loadTask = Task { [weak self] in
+                guard let self else { return }
+                let started = Date()
+                let ready = await task.value
+                let waited = Date().timeIntervalSince(started)
+                if waited > 0.25 {
+                    log.log("engine.gap \(String(format: "%.2f", waited))s waiting for prefetch \(item.id)")
+                }
+                guard generation == loadGeneration else { return }
+                prefetched = nil
+                prefetchedID = nil
+                if let ready {
+                    loadTask = nil
+                    attach(ready, for: item, generation: generation, autoplay: autoplay)
+                } else {
+                    await fetchAndAttach(item, generation: generation, autoplay: autoplay)
+                }
+            }
+            return
+        }
         prefetched = nil
+        prefetchedID = nil
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        attachedItemID = nil
         loadTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let playerItem = try await library.playerItem(for: item)
-                guard generation == loadGeneration else { return }
-                loadTask = nil
-                attach(playerItem, for: item, generation: generation, autoplay: autoplay)
-            } catch {
-                guard generation == loadGeneration else { return }
-                loadTask = nil
-                isBuffering = false
-                errorMessage = (error as? LocalizedError)?.errorDescription ?? "Couldn't load this video"
-                log.log("engine.load.failed \(item.id) \(error)")
-                if queue.hasNext {
-                    queue.advance()
-                    loadCurrent(autoplay: autoplay)
-                }
+            await fetchAndAttach(item, generation: generation, autoplay: autoplay)
+        }
+    }
+
+    private func fetchAndAttach(_ item: VideoItem, generation: Int, autoplay: Bool) async {
+        do {
+            let playerItem = try await library.playerItem(for: item)
+            guard generation == loadGeneration else { return }
+            loadTask = nil
+            attach(playerItem, for: item, generation: generation, autoplay: autoplay)
+        } catch {
+            guard generation == loadGeneration else { return }
+            loadTask = nil
+            isBuffering = false
+            let message = (error as? LocalizedError)?.errorDescription ?? "Couldn't load this video"
+            log.log("engine.load.failed \(item.id) \(error)")
+            if queue.hasNext {
+                queue.advance()
+                loadCurrent(autoplay: autoplay)
+                errorMessage = "Skipped a video: \(message)"   // F5: set AFTER loadCurrent, which clears it
+            } else {
+                errorMessage = message
             }
         }
     }
@@ -279,6 +341,7 @@ final class PlaybackEngine {
     private func attach(_ playerItem: AVPlayerItem, for item: VideoItem, generation: Int, autoplay: Bool) {
         playerItem.audioTimePitchAlgorithm = .timeDomain
         player.replaceCurrentItem(with: playerItem)
+        attachedItemID = item.id
         let start = ResumePolicy.startTime(savedPosition: store.position(for: item.id), duration: item.duration)
         if start > 0 {
             time = start
@@ -307,24 +370,30 @@ final class PlaybackEngine {
     /// The next item's AVPlayerItem is fetched while the current one plays so the swap at
     /// the end is silent-gap-free — a silent app in the background is one iOS may suspend.
     private func refreshPrefetch() {
-        prefetchTask?.cancel()
         guard let index = queue.currentIndex, index + 1 < queue.count else {
+            prefetchTask?.cancel()
             prefetched = nil
+            prefetchedID = nil
             return
         }
         let next = queue.entries[index + 1].item
         if prefetched?.id == next.id { return }
+        if prefetchedID == next.id, prefetchTask != nil { return }
+        prefetchTask?.cancel()
         prefetched = nil
+        prefetchedID = next.id
         prefetchTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self else { return nil }
             do {
                 let item = try await library.playerItem(for: next)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return nil }
                 item.audioTimePitchAlgorithm = .timeDomain
                 prefetched = (next.id, item)
                 log.log("engine.prefetched \(next.id)")
+                return item
             } catch {
                 log.log("engine.prefetch.failed \(next.id) \(error)")
+                return nil
             }
         }
     }
@@ -343,17 +412,18 @@ final class PlaybackEngine {
     // MARK: Events
 
     private func tick(_ seconds: TimeInterval) {
-        guard seconds.isFinite else { return }
+        guard seconds.isFinite, !isSeeking else { return }
         time = seconds
         if isPlaying, seconds - lastSavedAt >= Self.saveInterval || seconds < lastSavedAt {
             saveProgress()
         }
     }
 
-    private func saveProgress() {
-        guard let item = current else { return }
-        lastSavedAt = time
-        store.setPosition(ResumePolicy.positionToStore(position: time, duration: duration), for: item.id)
+    private func saveProgress(itemID: String? = nil, at seconds: TimeInterval? = nil) {
+        guard let id = itemID ?? attachedItemID else { return }
+        let position = seconds ?? time
+        lastSavedAt = position
+        store.setPosition(ResumePolicy.positionToStore(position: position, duration: duration), for: id)
     }
 
     private func itemDidPlayToEnd(_ ended: AVPlayerItem?) {
@@ -376,6 +446,21 @@ final class PlaybackEngine {
             time = duration
             publishNowPlaying()
             log.log("engine.queue.finished")
+        }
+    }
+
+    private func itemDidFail(_ note: Notification) {
+        guard let failed = note.object as? AVPlayerItem, failed === player.currentItem, current != nil else { return }
+        let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+        log.log("engine.item.failed \(error?.localizedDescription ?? "unknown")")
+        if queue.hasNext {
+            queue.advance()
+            loadCurrent(autoplay: true)
+            errorMessage = "Skipped a video: playback failed"
+        } else {
+            isPlaying = false
+            errorMessage = "Playback failed"
+            publishNowPlaying()
         }
     }
 
@@ -403,6 +488,7 @@ final class PlaybackEngine {
             isBuffering = false
             if isPlaying, player.currentItem != nil {
                 isPlaying = false
+                lastExternalPause = Date()
                 saveProgress()
                 publishNowPlaying()
                 log.log("engine.pause external")
@@ -413,7 +499,7 @@ final class PlaybackEngine {
     }
 
     private func interruptionBegan() {
-        resumeAfterInterruption = isPlaying
+        resumeAfterInterruption = isPlaying || Date().timeIntervalSince(lastExternalPause) < 1.0
         if isPlaying {
             player.pause()
             isPlaying = false
