@@ -24,6 +24,7 @@ Distribution is TestFlight to the owner's phone only. No App Store release is pl
 | Player implementation | `AVPlayerViewController` (system player) inside a custom glass shell. A fully custom `AVPlayerLayer` player is a contained later swap if the system look ever grates. |
 | Name / bundle id | Backdrop, `com.kaichuan.backdrop`. |
 | Pipeline | NextStop's, verbatim in shape: Swift 5 mode, SwiftUI, XcodeGen `project.yml`; GitHub Actions unsigned simulator build with tests and screenshots; Codemagic signed build to TestFlight. Public GitHub repo so macOS Actions minutes stay free. |
+| Where the logic lives | A pure-Swift package `core/` (BackdropCore) holds everything that needs no UIKit/AVFoundation — queue, resume rules, store, Now Playing snapshot, diagnostics log, title formatting — and is unit-tested with Swift Testing via `swift test` on the Windows dev box (Swift 6.3.3 installed 2026-08-23) as well as in CI. The app in `ios/` depends on it as a local package. |
 
 ## Scope
 
@@ -48,36 +49,39 @@ positions, sorting options beyond newest-first.
 
 ## Architecture
 
-Single app target plus a unit-test target. Everything is Swift, SwiftUI for the shell,
-UIKit only where AVKit demands it.
+One app target (no test target) plus the BackdropCore package with its own test target.
+Everything is Swift, SwiftUI for the shell, UIKit only where AVKit demands it.
 
 ```
+core/                        BackdropCore — Foundation only, `swift test` anywhere
+  Package.swift
+  Sources/BackdropCore/      VideoItem, AlbumItem, VideoTitleFormatter, PlaybackQueue,
+                             ResumePolicy, PlaybackStore, NowPlayingSnapshot(+Builder),
+                             DiagnosticsLog
+  Tests/BackdropCoreTests/   one Swift Testing suite per unit above
 ios/
   project.yml                XcodeGen spec — the project file is generated, never committed
   Sources/App/
-    BackdropApp.swift        @main, root scene, wires AppModel
-    AppModel.swift           owns the long-lived objects below; @Observable
-    Library/                 PhotosLibrary, LibrarySource protocol, FixtureLibrarySource,
-                             VideoTitleFormatter, LibraryView, VideoCell, AlbumChips,
-                             PermissionGateView
-    Playback/                PlaybackEngine, PlaybackQueue, PlaybackState, PlayerHost,
-                             PlayerScreen, MiniBarView, QueueSheet, SpeedMenu
-    NowPlaying/              NowPlayingController, NowPlayingInfoBuilder
+    BackdropApp.swift        @main, RootView
+    AppModel.swift           composition root, navigation flags, launch options
+    Library/                 LibrarySource protocol, PhotosLibrary, FixtureLibrarySource,
+                             LibraryView, VideoCell, AlbumChips, PermissionGateView
+    Playback/                PlaybackEngine, PlayerHost, PlayerScreen (+PlayerHostView),
+                             PlayerControls (+SpeedMenu), MiniBarView, QueueSheet
+    NowPlaying/              NowPlayingController
     Audio/                   AudioSessionController
-    Storage/                 PlaybackStore, ResumePolicy
-    Diagnostics/             DiagnosticsLog, DiagnosticsView
-    UI/                      Theme, Glass helpers, Motion
-    Assets.xcassets
-  Tests/                     unit tests, listed under Testing
-ci/fixtures/sample.mp4       one small clip: CI seeds it into the simulator's Photos
-                             library, and project.yml also bundles it as an app resource
-                             for FixtureLibrarySource
+    Diagnostics/             DiagnosticsView
+    UI/                      Theme, Glass helpers, BackdropBackground
+    Fixtures/sample.mp4      one small generated clip: bundled for FixtureLibrarySource,
+                             and CI seeds the same file into the simulator's Photos library
+    Assets.xcassets          AppIcon
 ```
 
 ### Units and their contracts
 
-**`VideoTitleFormatter`** — pure: `VideoItem` to the title ("Sat 23 Aug 2026, 14:05")
-and subtitle (album name or "Photos") used everywhere a video is named. Unit tested.
+**`VideoTitleFormatter`** — pure: `VideoItem` to the title ("Sun 23 Aug 2026, 14:05")
+and subtitle (album name or "Photos") used everywhere a video is named, plus the
+`durationLabel` ("1:02:03"). Unit tested.
 
 **`VideoItem`** — value type the whole app passes around. `id` (Photos local identifier,
 or a synthetic id for fixtures), `source` (`.photos(localIdentifier)` or `.file(URL)` for
@@ -94,11 +98,13 @@ PhotoKit (`PHAsset.fetchAssets(with: .video)`, `PHCachingImageManager`,
 videos download on first play, `PHPhotoLibraryChangeObserver`). `FixtureLibrarySource`
 returns bundled items for screenshots and tests.
 
-**`PlaybackQueue`** — pure model, no AVFoundation. Ordered `[VideoItem]` and a current
+**`PlaybackQueue`** — pure model, no AVFoundation. Ordered `[QueueEntry]` (each a
+`VideoItem` with a stable UUID so the same video can be queued twice) and a current
 index. Operations: `replace(with:startingAt:)`, `playNext(_:)` (insert after current),
-`append(_:)`, `move(from:to:)`, `remove(at:)`, `advance() -> VideoItem?`,
-`previous(elapsed:) -> PreviousAction` (`.restart` when more than 3 s in, `.item` otherwise,
-`.none` at the head), `hasNext`, `hasPrevious`. Fully unit tested.
+`append(_:)`, `moveUpcoming(fromOffsets:toOffset:)`, `removeUpcoming(atOffsets:)`,
+`jump(to:)`, `advance() -> VideoItem?`, `previous(elapsed:) -> PreviousAction` (`.restart`
+when more than 3 s in or already at the head, `.item` otherwise, `.none` when empty),
+`hasNext`, `hasPrevious`. Fully unit tested.
 
 **`PlaybackEngine`** — `@MainActor @Observable`, owns the single `AVPlayer` for the app's
 lifetime. Public surface: `load(queue:)`, `play()`, `pause()`, `toggle()`, `seek(to:)`,
@@ -108,9 +114,10 @@ Internally: resolves `VideoItem -> AVPlayerItem` through the `LibrarySource`, pr
 next item's `AVPlayerItem` as soon as the current one starts, swaps at end with
 `replaceCurrentItem`, applies `defaultRate` and `audioTimePitchAlgorithm = .timeDomain` to
 every item, observes `AVPlayerItemDidPlayToEndTime`, drives `ResumePolicy` on load and
-`PlaybackStore` on a 5 s timer plus pause/background/end/advance. Talks to
-`NowPlayingController` and `AudioSessionController` through small protocols so tests can
-stub them.
+`PlaybackStore` on a 5 s timer plus pause/background/end/advance. It also watches the
+player's `timeControlStatus`, because the system player's own transport buttons drive the
+AVPlayer directly and the engine must follow (and publish to Now Playing and the store).
+The engine itself is not unit tested; everything it decides with is.
 
 **`PlayerHost`** — a UIKit `UIViewController` that owns the app's one
 `AVPlayerViewController`, created once by `AppModel` and kept alive for the process
@@ -122,11 +129,13 @@ unharmed when dismissed. PlayerHost also owns the AVKit delegate: PiP start/stop
 screen, then completes), and the background/foreground handling described under
 Playback mechanics. `updatesNowPlayingInfoCenter = false`, `allowsPictureInPicturePlayback
 = true`, `canStartPictureInPictureAutomaticallyFromInline = true`, `showsPlaybackControls =
-true`.
+true`, `speeds = []` (the system speed menu is hidden so Backdrop's own speed control is
+the only one and stays in sync with the store and Now Playing).
 
 **`NowPlayingController`** — the only thing that touches `MPNowPlayingInfoCenter` and
-`MPRemoteCommandCenter`. `NowPlayingInfoBuilder` is a pure function from (item, state,
-artwork) to the info dictionary, unit tested. Remote commands registered: play, pause,
+`MPRemoteCommandCenter`. `NowPlayingSnapshotBuilder` (core) is a pure function from (item,
+queue, elapsed, duration, playing, speed) to a `NowPlayingSnapshot`, unit tested; the
+controller maps the snapshot onto MediaPlayer keys and adds the artwork. Remote commands registered: play, pause,
 togglePlayPause, nextTrack, previousTrack, changePlaybackPosition, changePlaybackRate
 (rates 0.5–2). Skip-forward/backward stay disabled so the card shows previous/next.
 `nextTrack`/`previousTrack` `isEnabled` follows the queue. Elapsed time is pushed on
@@ -139,8 +148,8 @@ stop. Handles interruption began/ended (pause; resume when `shouldResume`) and r
 `oldDeviceUnavailable` (pause — headphones pulled).
 
 **`PlaybackStore`** — one Codable JSON file at
-`Application Support/Backdrop/state.json`, atomic write, debounced. Holds
-`positions: [videoId: seconds]`, `speed`, `loop`, `lastQueue: [videoId]` plus index.
+`Application Support/Backdrop/state.json`, atomic write-through on every change (it is a
+few hundred bytes). Holds `positions: [videoId: seconds]`, `speed`, `loop`.
 **`ResumePolicy`** — pure: a saved position under 5 s is ignored; a position within
 `max(5 s, 5%)` of the end counts as finished and the video restarts from 0 and its entry
 is dropped.
@@ -173,10 +182,13 @@ All ours. Dark, Liquid Glass, motion that responds to the user — never a stati
    opens with the iOS 18+ zoom navigation transition from the cell. Long press: Play Next,
    Add to Queue. Pull-to-refresh re-fetches (and `PHPhotoLibraryChangeObserver` refreshes
    automatically).
-3. **Player** — full screen cover hosting the system player. Our glass overlay, bottom
-   safe-area: Loop toggle, Speed (menu of presets; shows current), Queue. These hide with
-   the system controls. Title line (formatted creation date, album name) above. Landscape
-   allowed.
+3. **Player** — full screen cover. Portrait: our header (close chevron, "Now Playing"),
+   the system player inline at the video's aspect ratio (capped at half the screen), then
+   our glass controls below it: title/subtitle, previous · play/pause · next, and a chip
+   row with Loop, Speed (menu of presets, shows current) and Queue (with count). Inline
+   rather than AVKit's modal presentation keeps our controls clear of the system overlay
+   and is what automatic PiP from inline is designed for. Landscape: the player edge to
+   edge with only the close chevron. The system player's own speed menu is hidden.
 4. **Mini-bar** — floats over the library bottom when the engine has an item: thumbnail,
    title, play/pause, a progress hairline; springs in and out. Tap reopens the player.
    Swipe down or an X stops playback and clears Now Playing.
@@ -232,8 +244,8 @@ the library is one tap from starting again.
 - Photos denied/restricted: permission gate state, never a crash, no empty grid pretending
   to be a library.
 - `requestPlayerItem` fails or returns nil (asset deleted, iCloud unreachable): engine
-  logs, shows a short glass toast on the player/mini-bar, and advances to the next item if
-  there is one; otherwise stops.
+  logs, surfaces the message under the title on the player screen, and advances to the
+  next item if there is one; otherwise stays on the item, paused.
 - Audio session activation fails: logged, playback still attempted (it will be silent in
   the background, which the log will show).
 - Store read failure: start with empty state and log; never block launch on it.
@@ -241,17 +253,18 @@ the library is one tap from starting again.
 
 ## Data
 
-`state.json` only, as above. No App Group, no iCloud, no network. Position keys are Photos
-local identifiers, which are stable across launches on the same device. Entries are tiny;
-no eviction in v1.
+`state.json` and `diagnostics.log` in Application Support only. No App Group, no iCloud,
+no network. Position keys are Photos local identifiers, which are stable across launches
+on the same device. Entries are tiny; no eviction in v1. The log is trimmed at 1 MB.
 
 ## Pipeline and verification
 
 **GitHub Actions** (`.github/workflows/ios-compile.yml`, public repo, free macOS minutes):
 install XcodeGen, generate, build unsigned for a simulator, run the unit tests, seed the
-simulator Photos library with `ci/fixtures/sample.mp4` via `simctl addmedia`, grant
-`photos` permission, launch the app once per `-initialScreen` value and screenshot, collect
-crash reports, upload the screenshots as an artifact. Real-library launches use the seeded
+simulator Photos library with `ios/Sources/App/Fixtures/sample.mp4` via `simctl addmedia`,
+grant `photos` permission, launch the app once per `-initialScreen` value and screenshot,
+collect crash reports, upload the screenshots as an artifact. The core package's tests run
+first with `swift test`. Real-library launches use the seeded
 video; fixture launches (`-fixtureLibrary YES`) use the bundled item so the player screen
 renders deterministically.
 
@@ -263,10 +276,12 @@ com.kaichuan.backdrop --type IOS_APP_STORE --create`, `xcode-project use-profile
 `build-ipa`, publish to App Store Connect with the existing integration, internal
 TestFlight only.
 
-**Unit tests** (run on every push): `PlaybackQueueTests` (advance/previous/insert/move/
-remove/edges), `ResumePolicyTests` (ignore-short, finished-window, exact edges),
-`PlaybackStoreTests` (round trip, atomicity, corrupt file), `NowPlayingInfoBuilderTests`
-(keys, rate while paused, queue count/index, artwork presence), `VideoTitleFormatterTests`.
+**Unit tests** (Swift Testing, in `core/`, run locally and on every push):
+`PlaybackQueueTests` (advance/previous/insert/move/remove/edges), `ResumePolicyTests`
+(ignore-short, finished-window, exact edges), `PlaybackStoreTests` (round trip, nil
+removes, corrupt file, unwritable path), `NowPlayingSnapshotTests` (rate while paused,
+duration fallback, clamping, queue count/index), `VideoTitleFormatterTests`,
+`DiagnosticsLogTests` (timestamp format, append, clear, trim on a line boundary).
 
 **Device checklist** (owner, after TestFlight install):
 
