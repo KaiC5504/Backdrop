@@ -82,8 +82,8 @@ jobs:
       - name: Install, seed Photos, grant access
         run: |
           UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl privacy "$UDID" grant photos com.kaichuan.backdrop || echo "pre-install photos grant failed"
           xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/Backdrop.app
-          # Granted after install: the pre-install grant stopped sticking on recent images.
           xcrun simctl privacy "$UDID" grant photos com.kaichuan.backdrop || echo "photos grant failed"
           xcrun simctl addmedia "$UDID" ios/Sources/App/Fixtures/sample.mp4 || echo "addmedia failed"
           sleep 5
@@ -103,12 +103,13 @@ jobs:
             sleep 15
             xcrun simctl io "$UDID" screenshot "shots/$name.png"
           }
-          shoot library      -initialScreen library -legacyGlass YES
           shoot library-fx   -initialScreen library -fixtureLibrary YES -legacyGlass YES
           shoot permission   -initialScreen permission -fixtureLibrary YES -legacyGlass YES
           shoot player       -initialScreen player -fixtureLibrary YES -legacyGlass YES
           shoot queue        -initialScreen queue -fixtureLibrary YES -legacyGlass YES
           shoot diagnostics  -initialScreen diagnostics -fixtureLibrary YES -legacyGlass YES
+          # Real Photos last: if the grant did not stick, the system prompt must not sit over the fixture shots.
+          shoot library      -initialScreen library -legacyGlass YES
           ls -la shots
 
       - name: Collect crash reports

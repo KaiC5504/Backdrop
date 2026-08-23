@@ -9,6 +9,7 @@ final class PhotosLibrary: NSObject, LibrarySource {
     private let changeContinuation: AsyncStream<Void>.Continuation
     private let imageManager = PHCachingImageManager()
     private let log: DiagnosticsLog
+    private var isObserving = false
 
     init(log: DiagnosticsLog) {
         self.log = log
@@ -16,7 +17,7 @@ final class PhotosLibrary: NSObject, LibrarySource {
         changes = stream
         changeContinuation = continuation
         super.init()
-        PHPhotoLibrary.shared().register(self)
+        startObservingIfAllowed()
     }
 
     var access: LibraryAccess {
@@ -27,7 +28,14 @@ final class PhotosLibrary: NSObject, LibrarySource {
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         let mapped = Self.map(status)
         log.log("photos.access \(mapped)")
+        startObservingIfAllowed()
         return mapped
+    }
+
+    private func startObservingIfAllowed() {
+        guard !isObserving, access.canRead else { return }
+        PHPhotoLibrary.shared().register(self)
+        isObserving = true
     }
 
     private static func map(_ status: PHAuthorizationStatus) -> LibraryAccess {
