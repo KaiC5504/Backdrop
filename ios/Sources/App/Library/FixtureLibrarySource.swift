@@ -18,7 +18,7 @@ final class FixtureLibrarySource: LibrarySource {
     init(access: LibraryAccess) {
         self.access = access
         let url = Self.bundledSampleURL() ?? URL(fileURLWithPath: "/dev/null")
-        let base = Date(timeIntervalSince1970: 1_787_839_500) // 2026-08-23 14:05 UTC
+        let base = Date(timeIntervalSince1970: 1_787_493_900) // 2026-08-23 14:05 UTC
         let specs: [(Int, TimeInterval, Int, Int, String?)] = [
             (0, 8, 1920, 1080, nil),
             (1, 754, 1080, 1920, "Gym"),

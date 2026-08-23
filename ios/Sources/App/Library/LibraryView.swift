@@ -57,7 +57,7 @@ struct LibraryView: View {
             .scrollIndicators(.hidden)
             .refreshable { await reloadAll() }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { header }
+        .safeAreaBar(edge: .top, spacing: 0) { header }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if model.engine.current != nil {
                 MiniBarView()
@@ -134,10 +134,11 @@ struct LibraryView: View {
 
     private func reloadAll() async {
         albums = await model.library.albums()
-        if !albums.contains(where: { $0.id == selectedAlbumID }) {
-            selectedAlbumID = AlbumItem.allID
+        if albums.contains(where: { $0.id == selectedAlbumID }) {
+            await reloadVideos()
+        } else {
+            selectedAlbumID = AlbumItem.allID   // onChange reloads
         }
-        await reloadVideos()
         if !hasLoaded {
             hasLoaded = true
             try? await Task.sleep(for: .seconds(1))

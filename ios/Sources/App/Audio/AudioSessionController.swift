@@ -26,12 +26,16 @@ final class AudioSessionController {
         ) { [weak self] note in
             MainActor.assumeIsolated { self?.handleRouteChange(note) }
         })
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
+        } catch {
+            log.log("audio.session.category.failed \(error)")
+        }
     }
 
     func activate() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .moviePlayback, options: [])
             try session.setActive(true)
             if !isActive { log.log("audio.session.active") }
             isActive = true

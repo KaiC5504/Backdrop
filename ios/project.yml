@@ -68,6 +68,7 @@ targets:
         NSPhotoLibraryUsageDescription: >-
           Backdrop reads your Photos library to list and play your videos. Nothing
           leaves your phone.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
 
 # Declared so `xcodebuild -scheme Backdrop` works without Xcode ever having opened the
 # project to autocreate one.

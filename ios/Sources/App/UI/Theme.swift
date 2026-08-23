@@ -48,8 +48,8 @@ enum Theme {
         static let miniBarThumb: CGFloat = 44
         static let iconButton: CGFloat = 44
         static let queueThumb: CGFloat = 56
-        static let thumbnailRequest = CGSize(width: 400, height: 400)
-        static let artworkRequest = CGSize(width: 600, height: 600)
+        static let thumbnailRequest = CGSize(width: 270, height: 270)
+        static let artworkRequest = CGSize(width: 400, height: 400)
     }
 }
 
