@@ -107,9 +107,9 @@ when more than 3 s in or already at the head, `.item` otherwise, `.none` when em
 `hasNext`, `hasPrevious`. Fully unit tested.
 
 **`PlaybackEngine`** — `@MainActor @Observable`, owns the single `AVPlayer` for the app's
-lifetime. Public surface: `load(queue:)`, `play()`, `pause()`, `toggle()`, `seek(to:)`,
-`next()`, `previous()`, `setRate(_:)`, `setLoop(_:)`, `stop()`, and an observable
-`PlaybackState` (current item, isPlaying, time, duration, rate, loop, buffering, error).
+lifetime. Public surface: `play(_:in:)`, `play()`, `pause()`, `toggle()`, `seek(to:)`,
+`next()`, `previous()`, `setSpeed(_:)`, `setLoop(_:)`, `stop()`, and flat `@Observable`
+properties (`current`, `isPlaying`, `time`, `duration`, `speed`, `loop`, `errorMessage`).
 Internally: resolves `VideoItem -> AVPlayerItem` through the `LibrarySource`, prefetches the
 next item's `AVPlayerItem` as soon as the current one starts, swaps at end with
 `replaceCurrentItem`, applies `defaultRate` and `audioTimePitchAlgorithm = .timeDomain` to
@@ -119,8 +119,8 @@ player's `timeControlStatus`, because the system player's own transport buttons 
 AVPlayer directly and the engine must follow (and publish to Now Playing and the store).
 The engine itself is not unit tested; everything it decides with is.
 
-**`PlayerHost`** — a UIKit `UIViewController` that owns the app's one
-`AVPlayerViewController`, created once by `AppModel` and kept alive for the process
+**`PlayerHost`** — an `NSObject` that owns the app-lifetime `AVPlayerViewController` and
+its PiP delegate, created once by `AppModel` and kept alive for the process
 lifetime. Reason: PiP dies if the `AVPlayerViewController` is deallocated, and SwiftUI
 `fullScreenCover` destroys its content on dismiss. The SwiftUI `PlayerScreen` embeds this
 same host through a `UIViewControllerRepresentable` that reparents it, and returns it
@@ -157,7 +157,7 @@ is dropped.
 **`DiagnosticsLog`** — append-only text file in Application Support, flushed per line,
 ring-trimmed to ~1 MB. Every playback transition, audio session event, PiP event, and
 background/foreground event logs one line. `DiagnosticsView` shows it and offers the share
-sheet, plus the two experiment switches listed under Risks.
+sheet, plus the background-detach experiment switch listed under Risks.
 
 **`AppModel`** — composition root. Creates `PhotosLibrary` (or the fixture source when
 launched with `-fixtureLibrary YES`), `PlaybackEngine`, `PlayerHost`,
@@ -195,10 +195,10 @@ All ours. Dark, Liquid Glass, motion that responds to the user — never a stati
 5. **Queue sheet** — medium/large detent sheet: now playing at top, upcoming list with
    drag-to-reorder and swipe-to-remove. Tapping an upcoming item jumps to it.
 6. **Diagnostics** — reached from a small gear on the library. Log viewer, share, and the
-   experiment switches. Not styled beyond the theme; it is an instrument.
+   experiment switch. Not styled beyond the theme; it is an instrument.
 
 Titles: Photos videos have no meaningful name, so the title is the creation date formatted
-like "Sat 23 Aug 2026, 14:05" and the subtitle is the album name when playing from an
+like "Sun 23 Aug 2026, 14:05" and the subtitle is the album name when playing from an
 album, otherwise "Photos". The same strings appear in the cell, the mini-bar, the overlay
 and the Now Playing card.
 
@@ -219,7 +219,9 @@ is rendering into a player view when the app backgrounds. PlayerHost therefore, 
 (`player = nil`) unless PiP is active, and reattaches on `willEnterForeground`. Audio then
 continues through the active playback session. Whether the detach is actually required
 with today's AVKit is one of the on-device experiments (switch in Diagnostics); the code
-ships with detach on.
+ships with detach on. The player also sets
+`audiovisualBackgroundPlaybackPolicy = .continuesIfPossible` as the primary mechanism for
+keeping audio alive; the detach switch remains the experiment on top of it.
 
 **Auto-next in the background.** A silent app in the background is one iOS may suspend, so
 the gap between videos must be near zero: the next `AVPlayerItem` is requested as soon as
