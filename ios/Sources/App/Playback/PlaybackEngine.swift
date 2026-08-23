@@ -1,0 +1,458 @@
+import AVFoundation
+import Observation
+import UIKit
+import BackdropCore
+
+/// Owns the one AVPlayer. Everything that changes what is playing goes through here, so
+/// the store, Now Playing and the UI can never disagree about it.
+@MainActor
+@Observable
+final class PlaybackEngine {
+    let player = AVPlayer()
+
+    private(set) var queue = PlaybackQueue()
+    private(set) var current: VideoItem?
+    private(set) var isPlaying = false
+    private(set) var isBuffering = false
+    private(set) var time: TimeInterval = 0
+    private(set) var duration: TimeInterval = 0
+    private(set) var speed: Double
+    private(set) var loop: Bool
+    private(set) var errorMessage: String?
+    private(set) var artwork: UIImage?
+
+    @ObservationIgnored private let library: any LibrarySource
+    @ObservationIgnored private let store: PlaybackStore
+    @ObservationIgnored private let audio: AudioSessionController
+    @ObservationIgnored private let nowPlaying: NowPlayingController
+    @ObservationIgnored private let log: DiagnosticsLog
+    @ObservationIgnored private let formatter: VideoTitleFormatter
+
+    @ObservationIgnored private var timeObserver: Any?
+    @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var statusObservation: NSKeyValueObservation?
+    @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var prefetchTask: Task<Void, Never>?
+    @ObservationIgnored private var artworkTask: Task<Void, Never>?
+    @ObservationIgnored private var prefetched: (id: String, item: AVPlayerItem)?
+    @ObservationIgnored private var lastSavedAt: TimeInterval = 0
+    @ObservationIgnored private var resumeAfterInterruption = false
+
+    private static let saveInterval: TimeInterval = 5
+    private static let timescale: CMTimeScale = 600
+
+    init(
+        library: any LibrarySource,
+        store: PlaybackStore,
+        audio: AudioSessionController,
+        nowPlaying: NowPlayingController,
+        log: DiagnosticsLog,
+        formatter: VideoTitleFormatter
+    ) {
+        self.library = library
+        self.store = store
+        self.audio = audio
+        self.nowPlaying = nowPlaying
+        self.log = log
+        self.formatter = formatter
+        speed = store.speed
+        loop = store.loop
+
+        player.defaultRate = Float(speed)
+        nowPlaying.handler = self
+
+        audio.onInterruptionBegan = { [weak self] in self?.interruptionBegan() }
+        audio.onInterruptionEnded = { [weak self] resume in self?.interruptionEnded(shouldResume: resume) }
+        audio.onRouteLost = { [weak self] in self?.pause() }
+
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.5, preferredTimescale: Self.timescale), queue: .main
+        ) { [weak self] time in
+            MainActor.assumeIsolated { self?.tick(time.seconds) }
+        }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.itemDidPlayToEnd(note.object as? AVPlayerItem) }
+        }
+        statusObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+            // KVO thread is unspecified; read the live status on the main actor rather
+            // than trusting a value that may be stale by the time the hop lands.
+            Task { @MainActor [weak self] in self?.syncWithPlayerStatus() }
+        }
+    }
+
+    // MARK: Commands
+
+    func play(_ item: VideoItem, in list: [VideoItem]) {
+        let index = list.firstIndex(where: { $0.id == item.id }) ?? 0
+        let items = list.isEmpty ? [item] : list
+        saveProgress()
+        queue = PlaybackQueue(items: items, startingAt: index)
+        loadCurrent(autoplay: true)
+    }
+
+    func play() {
+        guard current != nil else { return }
+        audio.activate()
+        player.play()
+        isPlaying = true
+        publishNowPlaying()
+        log.log("engine.play")
+    }
+
+    func pause() {
+        guard current != nil else { return }
+        player.pause()
+        isPlaying = false
+        saveProgress()
+        publishNowPlaying()
+        log.log("engine.pause")
+    }
+
+    func toggle() {
+        isPlaying ? pause() : play()
+    }
+
+    func seek(to seconds: TimeInterval) {
+        guard current != nil else { return }
+        let upper = duration > 0 ? duration : seconds
+        let clamped = max(0, min(seconds, upper))
+        time = clamped
+        player.seek(to: CMTime(seconds: clamped, preferredTimescale: Self.timescale),
+                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.publishNowPlaying()
+                self?.saveProgress()
+            }
+        }
+    }
+
+    func next() {
+        guard queue.hasNext else { return }
+        saveProgress()
+        queue.advance()
+        loadCurrent(autoplay: true)
+    }
+
+    func previous() {
+        switch queue.previous(elapsed: time) {
+        case .restart:
+            seek(to: 0)
+        case .item:
+            saveProgress()
+            loadCurrent(autoplay: true)
+        case .none:
+            break
+        }
+    }
+
+    func setSpeed(_ value: Double) {
+        speed = value
+        store.speed = value
+        player.defaultRate = Float(value)
+        if isPlaying {
+            player.rate = Float(value)
+        }
+        publishNowPlaying()
+        log.log("engine.speed \(value)")
+    }
+
+    func setLoop(_ value: Bool) {
+        loop = value
+        store.loop = value
+        log.log("engine.loop \(value)")
+    }
+
+    func stop() {
+        saveProgress()
+        loadGeneration += 1
+        loadTask?.cancel()
+        prefetchTask?.cancel()
+        artworkTask?.cancel()
+        prefetched = nil
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        isPlaying = false
+        isBuffering = false
+        current = nil
+        queue.clear()
+        time = 0
+        duration = 0
+        artwork = nil
+        errorMessage = nil
+        nowPlaying.clear()
+        audio.deactivate()
+        log.log("engine.stop")
+    }
+
+    func playNext(_ item: VideoItem) {
+        if queue.isEmpty {
+            play(item, in: [item])
+            return
+        }
+        queue.playNext(item)
+        refreshPrefetch()
+        publishNowPlaying()
+    }
+
+    func enqueue(_ item: VideoItem) {
+        if queue.isEmpty {
+            play(item, in: [item])
+            return
+        }
+        queue.append(item)
+        refreshPrefetch()
+        publishNowPlaying()
+    }
+
+    func jump(to entryID: UUID) {
+        guard queue.jump(to: entryID) != nil else { return }
+        saveProgress()
+        loadCurrent(autoplay: true)
+    }
+
+    func moveUpcoming(fromOffsets source: IndexSet, toOffset destination: Int) {
+        queue.moveUpcoming(fromOffsets: source, toOffset: destination)
+        refreshPrefetch()
+    }
+
+    func removeUpcoming(atOffsets offsets: IndexSet) {
+        queue.removeUpcoming(atOffsets: offsets)
+        refreshPrefetch()
+        publishNowPlaying()
+    }
+
+    func saveProgressNow() {
+        saveProgress()
+    }
+
+    // MARK: Loading
+
+    private func loadCurrent(autoplay: Bool) {
+        loadGeneration += 1
+        let generation = loadGeneration
+        loadTask?.cancel()
+        guard let item = queue.current else {
+            current = nil
+            return
+        }
+        current = item
+        time = 0
+        lastSavedAt = 0
+        duration = item.duration
+        isBuffering = true
+        errorMessage = nil
+        artwork = nil
+        log.log("engine.load \(item.id) gen=\(generation)")
+        publishNowPlaying()
+        loadArtwork(for: item)
+
+        if let ready = prefetched, ready.id == item.id {
+            prefetched = nil
+            attach(ready.item, for: item, generation: generation, autoplay: autoplay)
+            return
+        }
+        prefetched = nil
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let playerItem = try await library.playerItem(for: item)
+                guard generation == loadGeneration else { return }
+                loadTask = nil
+                attach(playerItem, for: item, generation: generation, autoplay: autoplay)
+            } catch {
+                guard generation == loadGeneration else { return }
+                loadTask = nil
+                isBuffering = false
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? "Couldn't load this video"
+                log.log("engine.load.failed \(item.id) \(error)")
+                if queue.hasNext {
+                    queue.advance()
+                    loadCurrent(autoplay: autoplay)
+                }
+            }
+        }
+    }
+
+    private func attach(_ playerItem: AVPlayerItem, for item: VideoItem, generation: Int, autoplay: Bool) {
+        playerItem.audioTimePitchAlgorithm = .timeDomain
+        player.replaceCurrentItem(with: playerItem)
+        let start = ResumePolicy.startTime(savedPosition: store.position(for: item.id), duration: item.duration)
+        if start > 0 {
+            time = start
+            player.seek(to: CMTime(seconds: start, preferredTimescale: Self.timescale),
+                        toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+        isBuffering = false
+        if autoplay {
+            play()
+        } else {
+            publishNowPlaying()
+        }
+        log.log("engine.attached \(item.id) start=\(Int(start))")
+
+        Task { [weak self] in
+            guard let self else { return }
+            if let loaded = try? await playerItem.asset.load(.duration), loaded.isNumeric,
+               loadGeneration == generation {
+                duration = loaded.seconds
+                publishNowPlaying()
+            }
+        }
+        refreshPrefetch()
+    }
+
+    /// The next item's AVPlayerItem is fetched while the current one plays so the swap at
+    /// the end is silent-gap-free — a silent app in the background is one iOS may suspend.
+    private func refreshPrefetch() {
+        prefetchTask?.cancel()
+        guard let index = queue.currentIndex, index + 1 < queue.count else {
+            prefetched = nil
+            return
+        }
+        let next = queue.entries[index + 1].item
+        if prefetched?.id == next.id { return }
+        prefetched = nil
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let item = try await library.playerItem(for: next)
+                guard !Task.isCancelled else { return }
+                item.audioTimePitchAlgorithm = .timeDomain
+                prefetched = (next.id, item)
+                log.log("engine.prefetched \(next.id)")
+            } catch {
+                log.log("engine.prefetch.failed \(next.id) \(error)")
+            }
+        }
+    }
+
+    private func loadArtwork(for item: VideoItem) {
+        artworkTask?.cancel()
+        artworkTask = Task { [weak self] in
+            guard let self else { return }
+            let image = await library.thumbnail(for: item, size: Theme.Sizes.artworkRequest)
+            guard !Task.isCancelled, current?.id == item.id else { return }
+            artwork = image
+            nowPlaying.setArtwork(image)
+        }
+    }
+
+    // MARK: Events
+
+    private func tick(_ seconds: TimeInterval) {
+        guard seconds.isFinite else { return }
+        time = seconds
+        if isPlaying, seconds - lastSavedAt >= Self.saveInterval || seconds < lastSavedAt {
+            saveProgress()
+        }
+    }
+
+    private func saveProgress() {
+        guard let item = current else { return }
+        lastSavedAt = time
+        store.setPosition(ResumePolicy.positionToStore(position: time, duration: duration), for: item.id)
+    }
+
+    private func itemDidPlayToEnd(_ ended: AVPlayerItem?) {
+        guard let ended, ended === player.currentItem, let item = current else { return }
+        log.log("engine.ended \(item.id)")
+        store.setPosition(nil, for: item.id)
+        if loop {
+            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            player.play()
+            time = 0
+            isPlaying = true
+            publishNowPlaying()
+            return
+        }
+        if queue.hasNext {
+            queue.advance()
+            loadCurrent(autoplay: true)
+        } else {
+            isPlaying = false
+            time = duration
+            publishNowPlaying()
+            log.log("engine.queue.finished")
+        }
+    }
+
+    /// The system player's own transport buttons drive the AVPlayer directly; this is
+    /// how the engine (and therefore Now Playing and the store) finds out.
+    private func syncWithPlayerStatus() {
+        switch player.timeControlStatus {
+        case .waitingToPlayAtSpecifiedRate:
+            isBuffering = true
+            if !isPlaying, player.currentItem != nil {
+                isPlaying = true
+                audio.activate()
+                publishNowPlaying()
+                log.log("engine.play external (waiting)")
+            }
+        case .playing:
+            isBuffering = false
+            if !isPlaying {
+                isPlaying = true
+                audio.activate()
+                publishNowPlaying()
+                log.log("engine.play external")
+            }
+        case .paused:
+            isBuffering = false
+            if isPlaying, player.currentItem != nil {
+                isPlaying = false
+                saveProgress()
+                publishNowPlaying()
+                log.log("engine.pause external")
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func interruptionBegan() {
+        resumeAfterInterruption = isPlaying
+        if isPlaying {
+            player.pause()
+            isPlaying = false
+            saveProgress()
+            publishNowPlaying()
+        }
+    }
+
+    private func interruptionEnded(shouldResume: Bool) {
+        if shouldResume && resumeAfterInterruption {
+            play()
+        }
+        resumeAfterInterruption = false
+    }
+
+    private func publishNowPlaying() {
+        guard let item = current else {
+            nowPlaying.clear()
+            return
+        }
+        let snapshot = NowPlayingSnapshotBuilder.make(
+            item: item,
+            queue: queue,
+            elapsed: time,
+            duration: duration > 0 ? duration : nil,
+            isPlaying: isPlaying,
+            speed: speed,
+            formatter: formatter
+        )
+        nowPlaying.publish(snapshot, hasNext: queue.hasNext)
+    }
+}
+
+extension PlaybackEngine: NowPlayingCommandHandling {
+    func remotePlay() { play() }
+    func remotePause() { pause() }
+    func remoteToggle() { toggle() }
+    func remoteNext() { next() }
+    func remotePrevious() { previous() }
+    func remoteSeek(to seconds: TimeInterval) { seek(to: seconds) }
+    func remoteSetRate(_ rate: Double) { setSpeed(rate) }
+}
