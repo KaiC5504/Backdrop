@@ -22,8 +22,8 @@ struct AlbumChips: View {
                                     .foregroundStyle(Theme.Colors.textSecondary)
                             }
                             .foregroundStyle(Theme.Colors.textPrimary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, Theme.Spacing.chipH)
+                            .padding(.vertical, Theme.Spacing.s)
                         }
                         .buttonStyle(.plain)
                         .glassChip(selected: selected)

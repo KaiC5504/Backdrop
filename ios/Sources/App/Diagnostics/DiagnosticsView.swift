@@ -13,13 +13,14 @@ struct DiagnosticsView: View {
                 Section {
                     Toggle("Detach player on background", isOn: $detach)
                         .onChange(of: detach) { _, value in
+                            guard value != model.playerHost.detachOnBackground else { return }
                             model.playerHost.detachOnBackground = value
                             model.log.log("diag.detachOnBackground \(value)")
                         }
                 } header: {
                     Text("Experiments")
                 } footer: {
-                    Text("On: when the app goes to the background without Picture in Picture, the video view lets go of the player so the audio keeps going. Off: tests whether iOS keeps playing without that. Lock the phone while playing (no PiP) and compare.")
+                    Text("On: when the app goes to the background without Picture in Picture, the video view lets go of the player so the audio keeps going. Off: tests whether iOS keeps playing without that. Lock the phone while playing (no PiP) and compare. Either way the player asks iOS to keep audio running in the background; this switch only changes whether the video view lets go of it.")
                 }
                 Section("Log") {
                     ShareLink(item: model.log.fileURL) {

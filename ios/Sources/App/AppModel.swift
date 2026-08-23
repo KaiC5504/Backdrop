@@ -83,7 +83,10 @@ final class AppModel {
 
         nowPlaying.registerCommands()
         host.onBackground = { [weak engine] in engine?.saveProgressNow() }
-        host.onRestoreRequested = { [weak self] in self?.isPlayerPresented = true }
+        host.onRestoreRequested = { [weak self] in
+            self?.zoomSourceID = ""
+            self?.isPlayerPresented = true
+        }
         log.log("app.launch screen=\(launch.initialScreen ?? "-") fixture=\(launch.fixtureLibrary) access=\(access)")
         applyInitialScreen()
     }

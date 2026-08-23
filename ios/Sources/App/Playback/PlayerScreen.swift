@@ -47,6 +47,7 @@ struct PlayerScreen: View {
                 .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cell, style: .continuous))
                 .shadow(color: .black.opacity(0.5), radius: 30, y: 12)
+            Spacer(minLength: 0)
             PlayerControls()
                 .padding(.horizontal, Theme.Spacing.m)
                 .padding(.top, Theme.Spacing.l)

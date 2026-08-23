@@ -9,6 +9,8 @@ enum Theme {
         static let textSecondary = Color.white.opacity(0.62)
         static let accent = Color(hex: 0x8FA8FF)
         static let accentSoft = Color(hex: 0x8FA8FF).opacity(0.35)
+        static let warning = Color(hex: 0xF2B263)
+        static let surfaceFaint = Color.white.opacity(0.04)
         /// Nine stops for the 3×3 mesh, row by row. Deep indigo/violet/teal that
         /// reads as depth behind glass, never as a poster.
         static let mesh: [Color] = [
@@ -24,6 +26,8 @@ enum Theme {
         static let m: CGFloat = 16
         static let l: CGFloat = 24
         static let xl: CGFloat = 40
+        static let chipH: CGFloat = 12
+        static let chipV: CGFloat = 10
     }
 
     enum Radius {
@@ -43,6 +47,7 @@ enum Theme {
     enum Sizes {
         static let miniBarThumb: CGFloat = 44
         static let iconButton: CGFloat = 44
+        static let queueThumb: CGFloat = 56
         static let thumbnailRequest = CGSize(width: 400, height: 400)
         static let artworkRequest = CGSize(width: 600, height: 600)
     }

@@ -9,7 +9,7 @@ struct BackdropBackground: View {
             if reduceMotion {
                 mesh(phase: 0)
             } else {
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
                     mesh(phase: context.date.timeIntervalSinceReferenceDate)
                 }
             }

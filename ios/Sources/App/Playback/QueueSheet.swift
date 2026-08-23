@@ -60,7 +60,7 @@ struct QueueRow: View {
                         .scaledToFill()
                 }
             }
-            .frame(width: 56, height: 56)
+            .frame(width: Theme.Sizes.queueThumb, height: Theme.Sizes.queueThumb)
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.pill, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.formatter.title(for: item))
@@ -77,9 +77,9 @@ struct QueueRow: View {
                     .symbolEffect(.variableColor.iterative, options: .repeating, isActive: model.engine.isPlaying)
             }
         }
-        .listRowBackground(Color.white.opacity(highlighted ? 0.08 : 0.04))
+        .listRowBackground(highlighted ? Theme.Colors.surface : Theme.Colors.surfaceFaint)
         .task(id: item.id) {
-            image = await model.library.thumbnail(for: item, size: CGSize(width: 112, height: 112))
+            image = await model.library.thumbnail(for: item, size: CGSize(width: Theme.Sizes.queueThumb * 2, height: Theme.Sizes.queueThumb * 2))
         }
     }
 }

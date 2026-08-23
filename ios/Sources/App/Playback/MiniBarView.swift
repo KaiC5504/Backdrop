@@ -47,7 +47,10 @@ struct MiniBarView: View {
         .padding(.horizontal, Theme.Spacing.m)
         .padding(.bottom, Theme.Spacing.s)
         .contentShape(Rectangle())
-        .onTapGesture { model.isPlayerPresented = true }
+        .onTapGesture {
+            model.zoomSourceID = ""
+            model.isPlayerPresented = true
+        }
         .gesture(
             DragGesture(minimumDistance: 24).onEnded { value in
                 if value.translation.height > 48 { model.stopPlayback() }

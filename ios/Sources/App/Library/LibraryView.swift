@@ -95,8 +95,8 @@ struct LibraryView: View {
                     Text("Manage")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Theme.Colors.textPrimary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, Theme.Spacing.chipH)
+                        .padding(.vertical, Theme.Spacing.s)
                 }
                 .buttonStyle(.plain)
                 .glassCapsule(interactive: true)

@@ -18,7 +18,7 @@ struct PlayerControls: View {
                 if let message = engine.errorMessage {
                     Text(message)
                         .font(.footnote)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.Colors.warning)
                         .padding(.top, 4)
                 }
             }
@@ -42,6 +42,7 @@ struct PlayerControls: View {
                     .disabled(!engine.queue.hasNext)
             }
             .sensoryFeedback(.impact(weight: .light), trigger: engine.isPlaying)
+            .sensoryFeedback(.impact(weight: .light), trigger: engine.current?.id)
 
             GlassEffectContainer(spacing: Theme.Spacing.s) {
                 HStack(spacing: Theme.Spacing.s) {
@@ -66,9 +67,11 @@ struct PlayerControls: View {
         Button(action: action) {
             Label(title, systemImage: systemName)
                 .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .foregroundStyle(Theme.Colors.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, Theme.Spacing.chipH)
+                .padding(.vertical, Theme.Spacing.chipV)
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
@@ -96,9 +99,11 @@ struct SpeedMenu: View {
         } label: {
             Label(Self.label(engine.speed), systemImage: "gauge.with.dots.needle.67percent")
                 .font(.subheadline.weight(.semibold).monospacedDigit())
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .foregroundStyle(Theme.Colors.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, Theme.Spacing.chipH)
+                .padding(.vertical, Theme.Spacing.chipV)
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
