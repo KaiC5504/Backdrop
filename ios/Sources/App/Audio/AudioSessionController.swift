@@ -60,7 +60,7 @@ final class AudioSessionController {
             log.log("audio.interruption.began")
             onInterruptionBegan?()
         case .ended:
-            let optionsValue = info[AVAudioSessionInterruptionOptionsKey] as? UInt ?? 0
+            let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
             log.log("audio.interruption.ended resume=\(shouldResume)")
             onInterruptionEnded?(shouldResume)
