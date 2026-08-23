@@ -109,6 +109,8 @@ jobs:
           shoot queue        -initialScreen queue -fixtureLibrary YES -legacyGlass YES
           shoot diagnostics  -initialScreen diagnostics -fixtureLibrary YES -legacyGlass YES
           # Real Photos last: if the grant did not stick, the system prompt must not sit over the fixture shots.
+          xcrun simctl terminate "$UDID" com.kaichuan.backdrop 2>/dev/null || true
+          xcrun simctl privacy "$UDID" grant all com.kaichuan.backdrop || echo "post-launch grant failed"
           shoot library      -initialScreen library -legacyGlass YES
           ls -la shots
 
