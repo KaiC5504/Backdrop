@@ -1,0 +1,131 @@
+name: iOS compile check
+
+# Unsigned simulator build: core tests, app build, launch + screenshot every screen.
+# Needs no Apple account. The signed device build lives in codemagic.yaml.
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - "core/**"
+      - ".github/workflows/ios-compile.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ios-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          ls /Applications | grep -i '^Xcode' || true
+          # Newest Xcode on the image; the project targets iOS 26.
+          NEWEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$NEWEST" ]; then sudo xcode-select -s "$NEWEST"; fi
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphone || true
+          swift --version
+
+      - name: Core tests
+        run: |
+          cd core
+          swift test
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: |
+          cd ios
+          xcodegen generate
+
+      - name: Boot a simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          best = None
+          for runtime, items in devices.items():
+              if 'iOS' not in runtime:
+                  continue
+              for device in items:
+                  if 'iPhone' in device['name'] and device['isAvailable']:
+                      best = (runtime, device['udid'], device['name'])
+          print(best[1])
+          ")
+          echo "Booting $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          # Ad-hoc signed rather than CODE_SIGNING_ALLOWED=NO so entitlements still embed.
+          xcodebuild \
+            -project ios/Backdrop.xcodeproj \
+            -scheme Backdrop \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            build
+
+      - name: Install, seed Photos, grant access
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/Backdrop.app
+          # Granted after install: the pre-install grant stopped sticking on recent images.
+          xcrun simctl privacy "$UDID" grant photos com.kaichuan.backdrop || echo "photos grant failed"
+          xcrun simctl addmedia "$UDID" ios/Sources/App/Fixtures/sample.mp4 || echo "addmedia failed"
+          sleep 5
+
+      # Compiling only proves it parses. Launching proves the first screen does not
+      # crash, and the screenshots are the only look at the UI before TestFlight.
+      - name: Launch and screenshot
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          mkdir -p shots
+          shoot () {
+            local name="$1"; shift
+            xcrun simctl terminate "$UDID" com.kaichuan.backdrop 2>/dev/null || true
+            sleep 2
+            echo "--- launching $name: $* ---"
+            xcrun simctl launch "$UDID" com.kaichuan.backdrop "$@"
+            sleep 15
+            xcrun simctl io "$UDID" screenshot "shots/$name.png"
+          }
+          shoot library      -initialScreen library -legacyGlass YES
+          shoot library-fx   -initialScreen library -fixtureLibrary YES -legacyGlass YES
+          shoot permission   -initialScreen permission -fixtureLibrary YES -legacyGlass YES
+          shoot player       -initialScreen player -fixtureLibrary YES -legacyGlass YES
+          shoot queue        -initialScreen queue -fixtureLibrary YES -legacyGlass YES
+          shoot diagnostics  -initialScreen diagnostics -fixtureLibrary YES -legacyGlass YES
+          ls -la shots
+
+      - name: Collect crash reports
+        if: always()
+        run: |
+          mkdir -p shots/crashes
+          find ~/Library/Logs/DiagnosticReports -name "Backdrop*" -exec cp {} shots/crashes/ \; 2>/dev/null || true
+          if [ -n "$(ls -A shots/crashes 2>/dev/null)" ]; then
+            echo "CRASHES FOUND:"
+            ls -la shots/crashes
+            head -60 shots/crashes/* || true
+          else
+            echo "no crash reports — any blank screen is a layout or timing issue, not a crash"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-screenshots
+          path: shots/

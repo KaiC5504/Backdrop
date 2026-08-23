@@ -1,0 +1,74 @@
+# Codemagic CI — the signed device build only. The unsigned simulator build lives in
+# .github/workflows/ios-compile.yml; Codemagic's 500 free macOS minutes a month are
+# reserved for the thing only Codemagic can do without a Mac: sign.
+
+workflows:
+  testflight:
+    name: Device build to TestFlight
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+      cancel_previous_builds: true
+    # Only the things that can change the binary.
+    when:
+      changeset:
+        includes:
+          - 'ios'
+          - 'core'
+          - 'codemagic.yaml'
+    integrations:
+      # Must match the integration name in Codemagic exactly. It is the same App Store
+      # Connect key NextStop uses; the name is only a label.
+      app_store_connect: NextStop ASC key
+    environment:
+      xcode: latest
+      # No `ios_signing:` block on purpose — it only fetches existing files and fails on
+      # a bundle id that has none. The files are created explicitly below.
+      # Supplies CERT_KEY_B64: the private key of the distribution certificate, base64.
+      groups:
+        - code_signing
+    scripts:
+      - name: Install XcodeGen
+        script: brew install xcodegen
+      - name: Generate the Xcode project
+        script: |
+          cd ios
+          xcodegen generate
+      - name: Create signing files
+        script: |
+          set -e
+          keychain initialize
+          # Carried base64 because a PEM pasted into a web form loses its line breaks.
+          printf '%s' "$CERT_KEY_B64" | openssl base64 -d -A > "$HOME/cert_key.pem"
+          # --create registers the bundle id and a profile if they do not exist yet.
+          app-store-connect fetch-signing-files com.kaichuan.backdrop \
+            --type IOS_APP_STORE --create \
+            --certificate-key "@file:$HOME/cert_key.pem"
+          keychain add-certificates
+      - name: Apply signing settings
+        script: |
+          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" || true
+          security find-identity -v -p codesigning || true
+          xcode-project use-profiles \
+            --project ios/Backdrop.xcodeproj \
+            --code-signing-setup-verbose-logging
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --project ios/Backdrop.xcodeproj \
+            --scheme Backdrop \
+            --archive-xcargs "COMPILER_INDEX_STORE_ENABLE=NO CURRENT_PROJECT_VERSION=$BUILD_NUMBER"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        # Internal testers get the build the moment processing finishes.
+        submit_to_testflight: false
