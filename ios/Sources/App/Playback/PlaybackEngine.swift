@@ -31,7 +31,9 @@ final class PlaybackEngine {
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
     @ObservationIgnored private var failObserver: NSObjectProtocol?
+    @ObservationIgnored private var jumpObserver: NSObjectProtocol?
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
+    @ObservationIgnored private var itemStatusObservation: NSKeyValueObservation?
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var prefetchTask: Task<AVPlayerItem?, Never>?
@@ -43,6 +45,7 @@ final class PlaybackEngine {
     @ObservationIgnored private var lastExternalPause: Date = .distantPast
     @ObservationIgnored private var resumeAfterInterruption = false
     @ObservationIgnored private var isSeeking = false
+    @ObservationIgnored private var lastLoggedStoreError: String?
 
     private static let saveInterval: TimeInterval = 5
     private static let timescale: CMTimeScale = 600
@@ -65,6 +68,9 @@ final class PlaybackEngine {
         loop = store.loop
 
         player.defaultRate = Float(speed)
+        // iOS 15+: keep audio going when the app backgrounds with a video layer still attached.
+        // The detach experiment in PlayerHost stays as the belt to this brace.
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         nowPlaying.handler = self
 
         audio.onInterruptionBegan = { [weak self] in self?.interruptionBegan() }
@@ -86,6 +92,11 @@ final class PlaybackEngine {
         ) { [weak self] note in
             MainActor.assumeIsolated { self?.itemDidFail(note) }
         }
+        jumpObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.timeJumpedNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.itemTimeJumped(note.object as? AVPlayerItem) }
+        }
         statusObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
             // KVO thread is unspecified; read the live status on the main actor rather
             // than trusting a value that may be stale by the time the hop lands.
@@ -96,8 +107,8 @@ final class PlaybackEngine {
     // MARK: Commands
 
     func play(_ item: VideoItem, in list: [VideoItem]) {
-        let index = list.firstIndex(where: { $0.id == item.id }) ?? 0
-        let items = list.isEmpty ? [item] : list
+        let items = list.contains(where: { $0.id == item.id }) ? list : [item] + list
+        let index = items.firstIndex(where: { $0.id == item.id }) ?? 0
         saveProgress()
         queue = PlaybackQueue(items: items, startingAt: index)
         loadCurrent(autoplay: true)
@@ -105,6 +116,7 @@ final class PlaybackEngine {
 
     func play() {
         guard current != nil else { return }
+        if duration > 0, time >= duration - 0.5 { seek(to: 0) }
         audio.activate()
         player.play()
         isPlaying = true
@@ -173,12 +185,14 @@ final class PlaybackEngine {
         }
         publishNowPlaying()
         log.log("engine.speed \(value)")
+        noteStoreError()
     }
 
     func setLoop(_ value: Bool) {
         loop = value
         store.loop = value
         log.log("engine.loop \(value)")
+        noteStoreError()
     }
 
     func stop() {
@@ -192,6 +206,8 @@ final class PlaybackEngine {
         prefetchedID = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
         attachedItemID = nil
         isPlaying = false
         isSeeking = false
@@ -338,7 +354,9 @@ final class PlaybackEngine {
                 loadCurrent(autoplay: autoplay)
                 errorMessage = "Skipped a video: \(message)"   // F5: set AFTER loadCurrent, which clears it
             } else {
+                isPlaying = false
                 errorMessage = message
+                publishNowPlaying()
             }
         }
     }
@@ -348,6 +366,11 @@ final class PlaybackEngine {
         playerItem.audioTimePitchAlgorithm = .timeDomain
         player.replaceCurrentItem(with: playerItem)
         attachedItemID = item.id
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] observed, _ in
+            guard observed.status == .failed else { return }
+            Task { @MainActor [weak self] in self?.itemFailedToLoad(observed) }
+        }
         let start = ResumePolicy.startTime(savedPosition: store.position(for: item.id), duration: item.duration)
         if start > 0 {
             time = start
@@ -430,12 +453,14 @@ final class PlaybackEngine {
         let position = seconds ?? time
         lastSavedAt = position
         store.setPosition(ResumePolicy.positionToStore(position: position, duration: duration), for: id)
+        noteStoreError()
     }
 
     private func itemDidPlayToEnd(_ ended: AVPlayerItem?) {
         guard let ended, ended === player.currentItem, let item = current else { return }
         log.log("engine.ended \(item.id)")
         store.setPosition(nil, for: item.id)
+        noteStoreError()
         if loop {
             player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             player.play()
@@ -456,9 +481,18 @@ final class PlaybackEngine {
     }
 
     private func itemDidFail(_ note: Notification) {
-        guard let failed = note.object as? AVPlayerItem, failed === player.currentItem, current != nil else { return }
+        guard let failed = note.object as? AVPlayerItem else { return }
         let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
-        log.log("engine.item.failed \(error?.localizedDescription ?? "unknown")")
+        handleItemFailure(failed, reason: error?.localizedDescription ?? "unknown")
+    }
+
+    private func itemFailedToLoad(_ item: AVPlayerItem) {
+        handleItemFailure(item, reason: item.error?.localizedDescription ?? "item failed")
+    }
+
+    private func handleItemFailure(_ failed: AVPlayerItem, reason: String) {
+        guard failed === player.currentItem, current != nil else { return }
+        log.log("engine.item.failed \(reason)")
         if queue.hasNext {
             queue.advance()
             loadCurrent(autoplay: true)
@@ -468,6 +502,17 @@ final class PlaybackEngine {
             errorMessage = "Playback failed"
             publishNowPlaying()
         }
+    }
+
+    /// Scrubs and ±10 s taps in AVKit's own controls bypass `seek(to:)`; without this the
+    /// Lock Screen timeline keeps interpolating from the pre-scrub position.
+    private func itemTimeJumped(_ item: AVPlayerItem?) {
+        guard let item, item === player.currentItem, !isSeeking else { return }
+        let seconds = player.currentTime().seconds
+        guard seconds.isFinite else { return }
+        time = seconds
+        publishNowPlaying()
+        log.log("engine.jump \(Int(seconds))")
     }
 
     /// The system player's own transport buttons drive the AVPlayer directly; this is
@@ -526,16 +571,25 @@ final class PlaybackEngine {
             nowPlaying.clear()
             return
         }
+        let live = player.currentTime().seconds
+        let elapsed = (player.currentItem != nil && !isSeeking && live.isFinite) ? live : time
         let snapshot = NowPlayingSnapshotBuilder.make(
             item: item,
             queue: queue,
-            elapsed: time,
+            elapsed: elapsed,
             duration: duration > 0 ? duration : nil,
             isPlaying: isPlaying,
             speed: speed,
             formatter: formatter
         )
         nowPlaying.publish(snapshot, hasNext: queue.hasNext)
+    }
+
+    private func noteStoreError() {
+        let error = store.lastWriteError
+        guard error != lastLoggedStoreError else { return }
+        lastLoggedStoreError = error
+        if let error { log.log("store.write.failed \(error)") }
     }
 }
 
