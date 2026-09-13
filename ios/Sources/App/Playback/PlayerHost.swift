@@ -20,8 +20,6 @@ final class PlayerHost: NSObject {
 
     /// The PiP window's "go back to app" button. The app should show the player screen.
     var onRestoreRequested: (@MainActor () -> Void)?
-    /// Fires on didEnterBackground before any detach; the engine saves progress here.
-    var onBackground: (@MainActor () -> Void)?
 
     private let player: AVPlayer
     private let log: DiagnosticsLog
@@ -64,7 +62,6 @@ final class PlayerHost: NSObject {
     }
 
     private func didEnterBackground() {
-        onBackground?()
         let pip = isPictureInPictureActive || pictureInPictureStarting
         if detachOnBackground && !pip {
             controller.player = nil

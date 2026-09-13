@@ -5,7 +5,6 @@ import Foundation
 /// Not thread-safe by design — the engine owns it from the main actor.
 public final class PlaybackStore {
     public struct Contents: Codable, Equatable, Sendable {
-        public var positions: [String: TimeInterval] = [:]
         public var speed: Double = 1
         public var loop: Bool = false
         /// Video ids in the order the user arranged them.
@@ -13,14 +12,13 @@ public final class PlaybackStore {
         public init() {}
 
         private enum CodingKeys: String, CodingKey {
-            case positions, speed, loop, favourites
+            case speed, loop, favourites
         }
 
         // A key added after a build shipped has to be optional on read, or the first
         // launch after an update would throw the whole file away.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            positions = try c.decodeIfPresent([String: TimeInterval].self, forKey: .positions) ?? [:]
             speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1
             loop = try c.decodeIfPresent(Bool.self, forKey: .loop) ?? false
             favourites = try c.decodeIfPresent([String].self, forKey: .favourites) ?? []
@@ -58,15 +56,6 @@ public final class PlaybackStore {
     }
 
     public var snapshot: Contents { contents }
-
-    public func position(for videoID: String) -> TimeInterval? {
-        contents.positions[videoID]
-    }
-
-    public func setPosition(_ seconds: TimeInterval?, for videoID: String) {
-        guard contents.positions[videoID] != seconds else { return }
-        contents.positions[videoID] = seconds
-    }
 
     public var speed: Double {
         get { contents.speed }

@@ -19,7 +19,7 @@ Distribution is TestFlight to the owner's phone only. No App Store release is pl
 | --- | --- |
 | Lock Screen / Dynamic Island timeline | System Now Playing (`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`). No ActivityKit Live Activity, no widget extension, no App Group. |
 | Where videos come from | Browse the Photos library inside the app and play straight from the `PHAsset`. No import, no copying. |
-| Playback extras | Auto-play next, loop single video, playback speed, remember position. |
+| Playback extras | Auto-play next, loop single video, playback speed. Every video starts from the beginning. |
 | Minimum iOS | 26.0 (owner's phone; gives native Liquid Glass in SwiftUI). iPhone only. |
 | Player implementation | `AVPlayerViewController` (system player) inside a custom glass shell. A fully custom `AVPlayerLayer` player is a contained later swap if the system look ever grates. |
 | Name / bundle id | Backdrop, `com.kaichuan.backdrop`. |
@@ -38,14 +38,14 @@ In v1:
 - Now Playing card and Dynamic Island presence with title, thumbnail, scrubbable timeline,
   play/pause, previous/next.
 - Queue: play next, add to queue, reorder, remove; auto-advance at end of video.
-- Loop single video. Speed 0.5x–2x with pitch preserved. Remembered position per video.
+- Loop single video. Speed 0.5x–2x with pitch preserved. Videos always start from the beginning.
 - Mini-bar over the library while something is playing.
 - A Diagnostics screen with an on-device log and a share sheet, because the phone can never
   be plugged into the build machine.
 
 Not in v1: shuffle, audio files, import from Files, custom Live Activity, subtitle
-handling beyond what the system player gives, iPad, App Store release, iCloud sync of
-positions, sorting options beyond newest-first.
+handling beyond what the system player gives, iPad, App Store release, remembering
+playback position, sorting options beyond newest-first.
 
 ## Architecture
 
@@ -56,7 +56,7 @@ Everything is Swift, SwiftUI for the shell, UIKit only where AVKit demands it.
 core/                        BackdropCore — Foundation only, `swift test` anywhere
   Package.swift
   Sources/BackdropCore/      VideoItem, AlbumItem, VideoTitleFormatter, PlaybackQueue,
-                             ResumePolicy, PlaybackStore, NowPlayingSnapshot(+Builder),
+                             PlaybackStore, NowPlayingSnapshot(+Builder),
                              DiagnosticsLog
   Tests/BackdropCoreTests/   one Swift Testing suite per unit above
 ios/
@@ -113,10 +113,10 @@ properties (`current`, `isPlaying`, `time`, `duration`, `speed`, `loop`, `errorM
 Internally: resolves `VideoItem -> AVPlayerItem` through the `LibrarySource`, prefetches the
 next item's `AVPlayerItem` as soon as the current one starts, swaps at end with
 `replaceCurrentItem`, applies `defaultRate` and `audioTimePitchAlgorithm = .timeDomain` to
-every item, observes `AVPlayerItemDidPlayToEndTime`, drives `ResumePolicy` on load and
-`PlaybackStore` on a 5 s timer plus pause/background/end/advance. It also watches the
+every item, observes `AVPlayerItemDidPlayToEndTime`, and always starts an item from zero
+(nothing about playback position is saved). It also watches the
 player's `timeControlStatus`, because the system player's own transport buttons drive the
-AVPlayer directly and the engine must follow (and publish to Now Playing and the store).
+AVPlayer directly and the engine must follow (and publish to Now Playing).
 The engine itself is not unit tested; everything it decides with is.
 
 **`PlayerHost`** — an `NSObject` that owns the app-lifetime `AVPlayerViewController` and
@@ -149,12 +149,9 @@ stop. Handles interruption began/ended (pause; resume when `shouldResume`) and r
 
 **`PlaybackStore`** — one Codable JSON file at
 `Application Support/Backdrop/state.json`, atomic write-through on every change (it is a
-few hundred bytes). Holds `positions: [videoId: seconds]`, `speed`, `loop`, and
-`favourites: [videoId]` in the order the user arranged them. Keys are optional on read so
-a file written by an older build still loads.
-**`ResumePolicy`** — pure: a saved position under 5 s is ignored; a position within
-`max(5 s, 5%)` of the end counts as finished and the video restarts from 0 and its entry
-is dropped.
+few hundred bytes). Holds `speed`, `loop`, and `favourites: [videoId]` in the order the
+user arranged them. Keys are optional on read and unknown keys are ignored, so a file
+written by an older build (which also saved positions) still loads.
 
 **`DiagnosticsLog`** — append-only text file in Application Support, flushed per line,
 ring-trimmed to ~1 MB. Every playback transition, audio session event, PiP event, and
@@ -191,7 +188,7 @@ All ours. Dark, Liquid Glass, motion that responds to the user — never a stati
    Queue. Pull-to-refresh re-fetches (and `PHPhotoLibraryChangeObserver` refreshes
    automatically).
    **Favourites** is Backdrop's own starred list, not a Photos album: the chip is first in
-   the row, and selecting it shows a one-line glass blurb under the chips saying what the
+   the row and the tab the app opens on; selecting it shows a one-line glass blurb under the chips saying what the
    tab does. Only here, holding a cell lifts it and dragging it over another cell reorders
    live (`onDrag` + `DropDelegate.dropEntered`), with a selection haptic per move; the order
    is written to the store on every move. Empty state explains the star in the player.
@@ -245,13 +242,13 @@ the session still active; this is logged.
 
 **Loop** beats auto-next: at end, seek to zero and play. **Speed** is set through
 `defaultRate` so resuming after a pause keeps it, and mirrored into Now Playing's
-`defaultPlaybackRate`/`playbackRate`. **Remember position** is saved through
-`PlaybackStore` and applied on load through `ResumePolicy`.
+`defaultPlaybackRate`/`playbackRate`. **Position is never remembered**: every load starts
+at zero (decided 2026-09-13).
 
 **Previous** from the Lock Screen or the overlay restarts the current video when more than
 3 s in, otherwise goes to the previous queue item.
 
-**Stop** (mini-bar X or swipe-down) pauses, saves the position, detaches the player,
+**Stop** (mini-bar X or swipe-down) pauses, detaches the player,
 clears Now Playing, deactivates the session and empties the queue. The mini-bar goes away;
 the library is one tap from starting again.
 
@@ -270,7 +267,7 @@ the library is one tap from starting again.
 ## Data
 
 `state.json` and `diagnostics.log` in Application Support only. No App Group, no iCloud,
-no network. Position keys are Photos local identifiers, which are stable across launches
+no network. Favourite ids are Photos local identifiers, which are stable across launches
 on the same device. Entries are tiny; no eviction in v1. The log is trimmed at 1 MB.
 
 ## Pipeline and verification
@@ -293,9 +290,8 @@ com.kaichuan.backdrop --type IOS_APP_STORE --create`, `xcode-project use-profile
 TestFlight only.
 
 **Unit tests** (Swift Testing, in `core/`, run locally and on every push):
-`PlaybackQueueTests` (advance/previous/insert/move/remove/edges), `ResumePolicyTests`
-(ignore-short, finished-window, exact edges), `PlaybackStoreTests` (round trip, nil
-removes, corrupt file, unwritable path, favourites toggle/order/move/clamp, legacy file
+`PlaybackQueueTests` (advance/previous/insert/move/remove/edges), `PlaybackStoreTests`
+(round trip, corrupt file, unwritable path, favourites toggle/order/move/clamp, legacy file
 without the key), `NowPlayingSnapshotTests` (rate while paused,
 duration fallback, clamping, queue count/index), `VideoTitleFormatterTests`,
 `DiagnosticsLogTests` (timestamp format, append, clear, trim on a line boundary).
@@ -312,7 +308,7 @@ duration fallback, clamping, queue count/index), `VideoTitleFormatterTests`,
 7. Let a video end while locked → the next one starts without reopening the app.
 8. Loop on → the same video restarts at end. Speed 1.5x → voice pitch unchanged; lock and
    unlock → still 1.5x.
-9. Kill and relaunch the app, play the same video → resumes near where it was left.
+9. Kill and relaunch the app, play the same video → starts from the beginning.
 10. Share the Diagnostics log back if anything in 2–9 fails.
 
 **Owner setup before the first signed build:** create the App Store Connect app record

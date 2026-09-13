@@ -97,7 +97,6 @@ final class AppModel {
         access = launch.forcedAccess ?? library.access
 
         nowPlaying.registerCommands()
-        host.onBackground = { [weak engine] in engine?.saveProgressNow() }
         host.onRestoreRequested = { [weak self] in
             self?.zoomSourceID = ""
             self?.isPlayerPresented = true

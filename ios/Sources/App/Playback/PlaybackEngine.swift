@@ -40,14 +40,11 @@ final class PlaybackEngine {
     @ObservationIgnored private var artworkTask: Task<Void, Never>?
     @ObservationIgnored private var prefetched: (id: String, item: AVPlayerItem)?
     @ObservationIgnored private var prefetchedID: String?
-    @ObservationIgnored private var attachedItemID: String?
-    @ObservationIgnored private var lastSavedAt: TimeInterval = 0
     @ObservationIgnored private var lastExternalPause: Date = .distantPast
     @ObservationIgnored private var resumeAfterInterruption = false
     @ObservationIgnored private var isSeeking = false
     @ObservationIgnored private var lastLoggedStoreError: String?
 
-    private static let saveInterval: TimeInterval = 5
     private static let timescale: CMTimeScale = 600
 
     init(
@@ -109,7 +106,6 @@ final class PlaybackEngine {
     func play(_ item: VideoItem, in list: [VideoItem]) {
         let items = list.contains(where: { $0.id == item.id }) ? list : [item] + list
         let index = items.firstIndex(where: { $0.id == item.id }) ?? 0
-        saveProgress()
         queue = PlaybackQueue(items: items, startingAt: index)
         loadCurrent(autoplay: true)
     }
@@ -128,7 +124,6 @@ final class PlaybackEngine {
         guard current != nil else { return }
         player.pause()
         isPlaying = false
-        saveProgress()
         publishNowPlaying()
         log.log("engine.pause")
     }
@@ -138,7 +133,7 @@ final class PlaybackEngine {
     }
 
     func seek(to seconds: TimeInterval) {
-        guard current != nil, player.currentItem != nil, let itemID = attachedItemID else { return }
+        guard current != nil, player.currentItem != nil else { return }
         let upper = duration > 0 ? duration : seconds
         let clamped = max(0, min(seconds, upper))
         time = clamped
@@ -151,14 +146,12 @@ final class PlaybackEngine {
                 isSeeking = false
                 guard finished, generation == loadGeneration else { return }
                 publishNowPlaying()
-                saveProgress(itemID: itemID, at: clamped)
             }
         }
     }
 
     func next() {
         guard queue.hasNext else { return }
-        saveProgress()
         queue.advance()
         loadCurrent(autoplay: true)
     }
@@ -168,7 +161,6 @@ final class PlaybackEngine {
         case .restart:
             seek(to: 0)
         case .item:
-            saveProgress()
             loadCurrent(autoplay: true)
         case .none:
             break
@@ -196,7 +188,6 @@ final class PlaybackEngine {
     }
 
     func stop() {
-        saveProgress()
         loadGeneration += 1
         loadTask?.cancel()
         prefetchTask?.cancel()
@@ -208,7 +199,6 @@ final class PlaybackEngine {
         player.replaceCurrentItem(with: nil)
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
-        attachedItemID = nil
         isPlaying = false
         isSeeking = false
         isBuffering = false
@@ -245,7 +235,6 @@ final class PlaybackEngine {
 
     func jump(to entryID: UUID) {
         guard queue.jump(to: entryID) != nil else { return }
-        saveProgress()
         loadCurrent(autoplay: true)
     }
 
@@ -260,10 +249,6 @@ final class PlaybackEngine {
         publishNowPlaying()
     }
 
-    func saveProgressNow() {
-        saveProgress()
-    }
-
     // MARK: Loading
 
     private func loadCurrent(autoplay: Bool) {
@@ -273,7 +258,6 @@ final class PlaybackEngine {
         guard let item = queue.current else {
             player.pause()
             player.replaceCurrentItem(with: nil)
-            attachedItemID = nil
             current = nil
             isPlaying = false
             isSeeking = false
@@ -284,7 +268,6 @@ final class PlaybackEngine {
         }
         current = item
         time = 0
-        lastSavedAt = 0
         duration = item.duration
         isBuffering = true
         errorMessage = nil
@@ -303,7 +286,6 @@ final class PlaybackEngine {
         if prefetchedID == item.id, let task = prefetchTask {
             player.pause()
             player.replaceCurrentItem(with: nil)
-            attachedItemID = nil
             loadTask = Task { [weak self] in
                 guard let self else { return }
                 let started = Date()
@@ -330,7 +312,6 @@ final class PlaybackEngine {
         prefetchedID = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
-        attachedItemID = nil
         loadTask = Task { [weak self] in
             guard let self else { return }
             await fetchAndAttach(item, generation: generation, autoplay: autoplay)
@@ -365,17 +346,10 @@ final class PlaybackEngine {
         isSeeking = false
         playerItem.audioTimePitchAlgorithm = .timeDomain
         player.replaceCurrentItem(with: playerItem)
-        attachedItemID = item.id
         itemStatusObservation?.invalidate()
         itemStatusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] observed, _ in
             guard observed.status == .failed else { return }
             Task { @MainActor [weak self] in self?.itemFailedToLoad(observed) }
-        }
-        let start = ResumePolicy.startTime(savedPosition: store.position(for: item.id), duration: item.duration)
-        if start > 0 {
-            time = start
-            player.seek(to: CMTime(seconds: start, preferredTimescale: Self.timescale),
-                        toleranceBefore: .zero, toleranceAfter: .zero)
         }
         isBuffering = false
         if autoplay {
@@ -383,7 +357,7 @@ final class PlaybackEngine {
         } else {
             publishNowPlaying()
         }
-        log.log("engine.attached \(item.id) start=\(Int(start))")
+        log.log("engine.attached \(item.id)")
 
         Task { [weak self] in
             guard let self else { return }
@@ -443,24 +417,11 @@ final class PlaybackEngine {
     private func tick(_ seconds: TimeInterval) {
         guard seconds.isFinite, !isSeeking else { return }
         time = seconds
-        if isPlaying, seconds - lastSavedAt >= Self.saveInterval || seconds < lastSavedAt {
-            saveProgress()
-        }
-    }
-
-    private func saveProgress(itemID: String? = nil, at seconds: TimeInterval? = nil) {
-        guard let id = itemID ?? attachedItemID else { return }
-        let position = seconds ?? time
-        lastSavedAt = position
-        store.setPosition(ResumePolicy.positionToStore(position: position, duration: duration), for: id)
-        noteStoreError()
     }
 
     private func itemDidPlayToEnd(_ ended: AVPlayerItem?) {
         guard let ended, ended === player.currentItem, let item = current else { return }
         log.log("engine.ended \(item.id)")
-        store.setPosition(nil, for: item.id)
-        noteStoreError()
         if loop {
             player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             player.play()
@@ -540,7 +501,6 @@ final class PlaybackEngine {
             if isPlaying, player.currentItem != nil {
                 isPlaying = false
                 lastExternalPause = Date()
-                saveProgress()
                 publishNowPlaying()
                 log.log("engine.pause external")
             }
@@ -554,7 +514,6 @@ final class PlaybackEngine {
         if isPlaying {
             player.pause()
             isPlaying = false
-            saveProgress()
             publishNowPlaying()
         }
     }

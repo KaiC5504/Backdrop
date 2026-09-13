@@ -9,7 +9,7 @@ struct LibraryView: View {
 
     @State private var videos: [VideoItem] = []
     @State private var libraryAlbums: [AlbumItem] = []
-    @State private var selectedAlbumID = AlbumItem.allID
+    @State private var selectedAlbumID = AlbumItem.favouritesID
     @State private var hasLoaded = false
     /// True only for the first grid render, so the stagger plays once, not on every refresh.
     @State private var staggerDone = false
@@ -80,8 +80,9 @@ struct LibraryView: View {
         .sensoryFeedback(.selection, trigger: reorderCount)
         .sheet(isPresented: $model.isDiagnosticsPresented) { DiagnosticsView() }
         .task {
-            if model.launch.initialScreen == "favourites" {
-                selectedAlbumID = AlbumItem.favouritesID
+            // Favourites is home. CI's `library` shot wants the full grid, so it opens All.
+            if model.launch.initialScreen == "library" {
+                selectedAlbumID = AlbumItem.allID
             }
             await reloadAll()
             for await _ in model.library.changes {
@@ -223,7 +224,7 @@ struct LibraryView: View {
             Text(isFavouritesTab ? "No favourites yet" : "No videos here")
                 .font(.headline)
             Text(isFavouritesTab
-                 ? "Open a video and tap the star next to Queue. It lands here, and Favourites are what plays next."
+                 ? "Pick a video from All and tap the star next to Queue. It lands here, and Favourites are what plays next."
                  : "Videos you record or save to Photos show up here.")
                 .font(.footnote)
                 .foregroundStyle(Theme.Colors.textSecondary)
@@ -241,7 +242,7 @@ struct LibraryView: View {
         if albums.contains(where: { $0.id == selectedAlbumID }) {
             await reloadVideos()
         } else {
-            selectedAlbumID = AlbumItem.allID   // onChange reloads
+            selectedAlbumID = AlbumItem.favouritesID   // onChange reloads
         }
         if !hasLoaded {
             hasLoaded = true

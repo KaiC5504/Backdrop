@@ -8,7 +8,7 @@ Design: `docs/superpowers/specs/2026-08-23-backdrop-design.md`.
 
 ## Layout
 
-- `core/` — BackdropCore, a pure-Swift package (queue, resume rules, store, Now Playing
+- `core/` — BackdropCore, a pure-Swift package (queue, store, Now Playing
   snapshot, diagnostics log). `cd core && swift test` runs on Windows, macOS and CI.
 - `ios/` — the SwiftUI app. The Xcode project is generated from `project.yml` by XcodeGen
   and never committed.
@@ -23,7 +23,8 @@ of every screen) → Codemagic (signed build) → TestFlight → phone.
 
 ## Screens for CI
 
-Launch arguments: `-initialScreen library|favourites|permission|player|queue|diagnostics`,
+Launch arguments: `-initialScreen library|favourites|permission|player|queue|diagnostics`
+(`library` opens the All tab; a normal launch lands on Favourites),
 `-fixtureLibrary YES` (bundled clip instead of Photos), `-fixtureFavourites YES` (star three
 fixture videos), `-fixtureAccess denied|limited|notDetermined` (force the fixture source's
 access state), `-legacyGlass YES`

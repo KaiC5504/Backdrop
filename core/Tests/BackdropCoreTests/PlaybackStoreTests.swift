@@ -19,33 +19,20 @@ import Testing
         let store = PlaybackStore(fileURL: prepared())
         #expect(store.speed == 1)
         #expect(store.loop == false)
-        #expect(store.position(for: "v") == nil)
+        #expect(store.favourites.isEmpty)
         #expect(store.loadError == nil)
     }
 
-    @Test func positionsSpeedAndLoopRoundTrip() {
+    @Test func speedAndLoopRoundTrip() {
         let url = prepared()
         let store = PlaybackStore(fileURL: url)
-        store.setPosition(42.5, for: "v1")
-        store.setPosition(7, for: "v2")
         store.speed = 1.5
         store.loop = true
         #expect(store.lastWriteError == nil)
 
         let reloaded = PlaybackStore(fileURL: url)
-        #expect(reloaded.position(for: "v1") == 42.5)
-        #expect(reloaded.position(for: "v2") == 7)
         #expect(reloaded.speed == 1.5)
         #expect(reloaded.loop == true)
-    }
-
-    @Test func nilRemovesPosition() {
-        let url = prepared()
-        let store = PlaybackStore(fileURL: url)
-        store.setPosition(10, for: "v")
-        store.setPosition(nil, for: "v")
-        #expect(store.position(for: "v") == nil)
-        #expect(PlaybackStore(fileURL: url).position(for: "v") == nil)
     }
 
     @Test func corruptFileStartsEmptyAndReportsIt() throws {
@@ -54,7 +41,7 @@ import Testing
         let store = PlaybackStore(fileURL: url)
         #expect(store.loadError != nil)
         #expect(store.speed == 1)
-        #expect(store.snapshot.positions.isEmpty)
+        #expect(store.snapshot.favourites.isEmpty)
     }
 
     @Test func writeAfterCorruptFileOverwritesIt() throws {
@@ -62,19 +49,19 @@ import Testing
         try Data("not json".utf8).write(to: url)
         let store = PlaybackStore(fileURL: url)
         #expect(store.loadError != nil)
-        store.setPosition(42, for: "x")
+        store.speed = 2
 
         let reloaded = PlaybackStore(fileURL: url)
-        #expect(reloaded.position(for: "x") == 42)
+        #expect(reloaded.speed == 2)
         #expect(reloaded.loadError == nil)
     }
 
     @Test func missingDirectoryIsReportedNotFatal() {
         let url = tempURL() // parent never created
         let store = PlaybackStore(fileURL: url)
-        store.setPosition(10, for: "v")
+        store.loop = true
         #expect(store.lastWriteError != nil)
-        #expect(store.position(for: "v") == 10)
+        #expect(store.loop == true)
     }
 
     @Test func favouritesStartEmpty() {
@@ -124,13 +111,13 @@ import Testing
         #expect(store.favourites == ["a", "b", "c"])
     }
 
-    @Test func stateFileWithoutFavouritesKeyStillLoads() throws {
+    /// Files written by builds that still saved positions carry a key we no longer read.
+    @Test func olderStateFileStillLoads() throws {
         let url = prepared()
         try Data(#"{"loop":true,"positions":{"v":12.5},"speed":1.5}"#.utf8).write(to: url)
         let store = PlaybackStore(fileURL: url)
         #expect(store.loadError == nil)
         #expect(store.favourites.isEmpty)
-        #expect(store.position(for: "v") == 12.5)
         #expect(store.speed == 1.5)
         #expect(store.loop == true)
     }
