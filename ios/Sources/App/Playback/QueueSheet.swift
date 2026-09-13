@@ -15,7 +15,7 @@ struct QueueSheet: View {
                 }
                 Section("Up Next") {
                     if engine.queue.upcoming.isEmpty {
-                        Text("Nothing queued. Long-press a video in the library to add it.")
+                        Text("Nothing queued. Star videos to build your Favourites, or long-press one in the library to add it here.")
                             .font(.footnote)
                             .foregroundStyle(Theme.Colors.textSecondary)
                     }

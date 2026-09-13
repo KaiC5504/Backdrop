@@ -6,6 +6,7 @@ struct VideoCell: View {
     let item: VideoItem
     let index: Int
     let animateIn: Bool
+    var starred = false
 
     @State private var image: UIImage?
     @State private var appeared = false
@@ -25,6 +26,17 @@ struct VideoCell: View {
                         }
                     }
                 }
+                .overlay(alignment: .topLeading) {
+                    if starred {
+                        Image(systemName: "star.fill")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Theme.Colors.favourite)
+                            .padding(6)
+                            .glassCapsule()
+                            .padding(Theme.Spacing.s)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
                 .overlay(alignment: .bottomTrailing) {
                     Text(VideoTitleFormatter.durationLabel(item.duration))
                         .font(.caption2.monospacedDigit().weight(.semibold))
@@ -41,6 +53,7 @@ struct VideoCell: View {
                 .lineLimit(1)
         }
         .contentShape(Rectangle())
+        .animation(Theme.Motion.snappy, value: starred)
         .scrollTransition(.interactive) { content, phase in
             content
                 .scaleEffect(phase.isIdentity ? 1 : 0.94)

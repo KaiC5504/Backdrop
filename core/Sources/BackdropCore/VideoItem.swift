@@ -42,10 +42,16 @@ public struct VideoItem: Hashable, Identifiable, Sendable, Codable {
 
 public struct AlbumItem: Hashable, Identifiable, Sendable {
     public enum Kind: Hashable, Sendable {
-        case all, favorites, user
+        case all
+        /// Backdrop's own starred list, kept in the store. Not a Photos album.
+        case favourites
+        /// The Photos "Favorites" smart album.
+        case photosFavorites
+        case user
     }
 
     public static let allID = "all"
+    public static let favouritesID = "favourites"
 
     public let id: String
     public let title: String

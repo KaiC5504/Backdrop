@@ -53,9 +53,33 @@ struct PlayerControls: View {
                     chip(systemName: "list.bullet", title: queueTitle, active: false) {
                         model.isQueuePresented = true
                     }
+                    favouriteChip
                 }
             }
         }
+    }
+
+    private var favouriteChip: some View {
+        let current = model.engine.current
+        let starred = current.map { model.isFavourite($0.id) } ?? false
+        return Button {
+            guard let current else { return }
+            model.toggleFavourite(current)
+        } label: {
+            Image(systemName: starred ? "star.fill" : "star")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(starred ? Theme.Colors.favourite : Theme.Colors.textPrimary)
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, value: starred)
+                .frame(width: Theme.Sizes.iconButton)
+                .padding(.vertical, Theme.Spacing.chipV)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .glassChip(selected: false)
+        .disabled(current == nil)
+        .accessibilityLabel(starred ? "Remove from Favourites" : "Add to Favourites")
+        .sensoryFeedback(.impact(weight: .light), trigger: starred)
     }
 
     private var queueTitle: String {

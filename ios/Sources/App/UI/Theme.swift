@@ -10,6 +10,7 @@ enum Theme {
         static let accent = Color(hex: 0x8FA8FF)
         static let accentSoft = Color(hex: 0x8FA8FF).opacity(0.35)
         static let warning = Color(hex: 0xF2B263)
+        static let favourite = Color(hex: 0xF6C453)
         static let surfaceFaint = Color.white.opacity(0.04)
         /// Nine stops for the 3×3 mesh, row by row. Deep indigo/violet/teal that
         /// reads as depth behind glass, never as a poster.

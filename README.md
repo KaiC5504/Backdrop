@@ -23,9 +23,10 @@ of every screen) → Codemagic (signed build) → TestFlight → phone.
 
 ## Screens for CI
 
-Launch arguments: `-initialScreen library|permission|player|queue|diagnostics`,
-`-fixtureLibrary YES` (bundled clip instead of Photos), `-fixtureAccess
-denied|limited|notDetermined` (force the fixture source's access state), `-legacyGlass YES`
+Launch arguments: `-initialScreen library|favourites|permission|player|queue|diagnostics`,
+`-fixtureLibrary YES` (bundled clip instead of Photos), `-fixtureFavourites YES` (star three
+fixture videos), `-fixtureAccess denied|limited|notDetermined` (force the fixture source's
+access state), `-legacyGlass YES`
 (material fallback the simulator renders reliably).
 
 ## Device checklist

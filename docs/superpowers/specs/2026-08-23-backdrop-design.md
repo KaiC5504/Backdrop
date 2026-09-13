@@ -149,7 +149,9 @@ stop. Handles interruption began/ended (pause; resume when `shouldResume`) and r
 
 **`PlaybackStore`** — one Codable JSON file at
 `Application Support/Backdrop/state.json`, atomic write-through on every change (it is a
-few hundred bytes). Holds `positions: [videoId: seconds]`, `speed`, `loop`.
+few hundred bytes). Holds `positions: [videoId: seconds]`, `speed`, `loop`, and
+`favourites: [videoId]` in the order the user arranged them. Keys are optional on read so
+a file written by an older build still loads.
 **`ResumePolicy`** — pure: a saved position under 5 s is ignored; a position within
 `max(5 s, 5%)` of the end counts as finished and the video restarts from 0 and its entry
 is dropped.
@@ -162,9 +164,12 @@ sheet, plus the background-detach experiment switch listed under Risks.
 **`AppModel`** — composition root. Creates `PhotosLibrary` (or the fixture source when
 launched with `-fixtureLibrary YES`), `PlaybackEngine`, `PlayerHost`,
 `NowPlayingController`, `AudioSessionController`, `PlaybackStore`, `DiagnosticsLog`.
-Holds navigation state: `isPlayerPresented`, `isQueuePresented`, selected album. Reads
-launch arguments (`-initialScreen library|player|queue|diagnostics|permission`,
-`-fixtureLibrary YES`) for CI screenshots.
+Holds navigation state: `isPlayerPresented`, `isQueuePresented`, selected album. Owns the
+Favourites list: `favouriteIDs` mirrors the store, `favourites` is the subset the library
+can currently resolve (titled "Favourites" so the player subtitle says so), with
+`toggleFavourite`, `moveFavourite(_:onto:)` and `refreshFavourites`. Reads launch
+arguments (`-initialScreen library|favourites|player|queue|diagnostics|permission`,
+`-fixtureLibrary YES`, `-fixtureFavourites YES`) for CI screenshots.
 
 ## Screens
 
@@ -175,17 +180,26 @@ All ours. Dark, Liquid Glass, motion that responds to the user — never a stati
    state offers "Open Settings". Limited state shows the library with a "Manage selection"
    chip that presents `presentLimitedLibraryPicker`.
 2. **Library** — full-bleed animated mesh-gradient background; a sticky glass album chip
-   row (All, Favorites, then user albums with at least one video); a two-column grid of
-   thumbnails with duration badge and date. Cells scale-in with a short stagger on first
-   appear and respond to scroll with `scrollTransition` (subtle scale/opacity at edges).
-   Tap plays: queue becomes the visible list starting at the tapped item, the player
-   opens with the iOS 18+ zoom navigation transition from the cell. Long press: Play Next,
-   Add to Queue. Pull-to-refresh re-fetches (and `PHPhotoLibraryChangeObserver` refreshes
+   row (Favourites, All, Photos Favorites, then user albums with at least one video); a
+   two-column grid of thumbnails with duration badge and date, and a small star badge on
+   any video that is a favourite. Cells scale-in with a short stagger on first appear and
+   respond to scroll with `scrollTransition` (subtle scale/opacity at edges).
+   Tap plays: the tapped video now, then Favourites in their order. A tapped favourite
+   starts the list from its own slot; anything else plays in front of the list; with no
+   favourites the video plays alone. The player opens with the iOS 18+ zoom navigation
+   transition from the cell. Long press: Add to/Remove from Favourites, Play Next, Add to
+   Queue. Pull-to-refresh re-fetches (and `PHPhotoLibraryChangeObserver` refreshes
    automatically).
+   **Favourites** is Backdrop's own starred list, not a Photos album: the chip is first in
+   the row, and selecting it shows a one-line glass blurb under the chips saying what the
+   tab does. Only here, holding a cell lifts it and dragging it over another cell reorders
+   live (`onDrag` + `DropDelegate.dropEntered`), with a selection haptic per move; the order
+   is written to the store on every move. Empty state explains the star in the player.
 3. **Player** — full screen cover. Portrait: our header (close chevron, "Now Playing"),
    the system player inline at the video's aspect ratio (capped at half the screen), then
    our glass controls below it: title/subtitle, previous · play/pause · next, and a chip
-   row with Loop, Speed (menu of presets, shows current) and Queue (with count). Inline
+   row with Loop, Speed (menu of presets, shows current), Queue (with count) and a star
+   that toggles the current video in Favourites (filled and gold when it is). Inline
    rather than AVKit's modal presentation keeps our controls clear of the system overlay
    and is what automatic PiP from inline is designed for. Landscape: the player edge to
    edge with only the close chevron. The system player's own speed menu is hidden.
@@ -281,7 +295,8 @@ TestFlight only.
 **Unit tests** (Swift Testing, in `core/`, run locally and on every push):
 `PlaybackQueueTests` (advance/previous/insert/move/remove/edges), `ResumePolicyTests`
 (ignore-short, finished-window, exact edges), `PlaybackStoreTests` (round trip, nil
-removes, corrupt file, unwritable path), `NowPlayingSnapshotTests` (rate while paused,
+removes, corrupt file, unwritable path, favourites toggle/order/move/clamp, legacy file
+without the key), `NowPlayingSnapshotTests` (rate while paused,
 duration fallback, clamping, queue count/index), `VideoTitleFormatterTests`,
 `DiagnosticsLogTests` (timestamp format, append, clear, trim on a line boundary).
 

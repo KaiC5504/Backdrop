@@ -15,11 +15,17 @@ struct AlbumChips: View {
                             withAnimation(Theme.Motion.snappy) { selectedID = album.id }
                         } label: {
                             HStack(spacing: 6) {
+                                if album.kind == .favourites {
+                                    Image(systemName: "star.fill")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(selected ? Theme.Colors.textPrimary : Theme.Colors.favourite)
+                                }
                                 Text(album.title)
                                     .font(.subheadline.weight(selected ? .semibold : .regular))
                                 Text("\(album.count)")
                                     .font(.caption2.monospacedDigit())
                                     .foregroundStyle(Theme.Colors.textSecondary)
+                                    .contentTransition(.numericText())
                             }
                             .foregroundStyle(Theme.Colors.textPrimary)
                             .padding(.horizontal, Theme.Spacing.chipH)

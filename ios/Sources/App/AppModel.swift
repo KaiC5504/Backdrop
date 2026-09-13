@@ -8,6 +8,8 @@ struct LaunchOptions {
     var initialScreen: String?
     var fixtureLibrary: Bool
     var forcedAccess: LibraryAccess?
+    /// Stars three fixture videos so the Favourites screenshot is not the empty state.
+    var fixtureFavourites: Bool
 
     static func fromUserDefaults(_ defaults: UserDefaults = .standard) -> LaunchOptions {
         let forced: LibraryAccess? = switch defaults.string(forKey: "fixtureAccess") {
@@ -19,7 +21,8 @@ struct LaunchOptions {
         return LaunchOptions(
             initialScreen: defaults.string(forKey: "initialScreen"),
             fixtureLibrary: defaults.bool(forKey: "fixtureLibrary"),
-            forcedAccess: forced
+            forcedAccess: forced,
+            fixtureFavourites: defaults.bool(forKey: "fixtureFavourites")
         )
     }
 }
@@ -28,6 +31,8 @@ struct LaunchOptions {
 @MainActor
 @Observable
 final class AppModel {
+    static let favouritesTitle = "Favourites"
+
     let launch: LaunchOptions
     let log: DiagnosticsLog
     let store: PlaybackStore
@@ -45,6 +50,12 @@ final class AppModel {
     /// The library cell the player zooms out of. Empty when opened another way.
     var zoomSourceID: String = ""
 
+    /// Starred ids in play order, mirrored from the store so views observe changes.
+    private(set) var favouriteIDs: [String]
+    /// The starred videos the library can currently see, in `favouriteIDs` order. One it
+    /// cannot see (deleted, or outside a limited selection) stays starred but not listed.
+    private(set) var favourites: [VideoItem] = []
+
     init(launch: LaunchOptions) {
         self.launch = launch
         let logURL = (try? DiagnosticsLog.defaultURL())
@@ -58,7 +69,11 @@ final class AppModel {
         if let error = store.loadError {
             log.log("store.load.failed \(error)")
         }
+        if launch.fixtureLibrary, launch.fixtureFavourites, store.favourites.isEmpty {
+            for id in ["fixture-1", "fixture-3", "fixture-5"] { store.toggleFavourite(id) }
+        }
         self.store = store
+        favouriteIDs = store.favourites
 
         let formatter = VideoTitleFormatter()
         self.formatter = formatter
@@ -87,7 +102,7 @@ final class AppModel {
             self?.zoomSourceID = ""
             self?.isPlayerPresented = true
         }
-        log.log("app.launch screen=\(launch.initialScreen ?? "-") fixture=\(launch.fixtureLibrary) access=\(access)")
+        log.log("app.launch screen=\(launch.initialScreen ?? "-") fixture=\(launch.fixtureLibrary) access=\(access) favourites=\(favouriteIDs.count)")
         applyInitialScreen()
     }
 
@@ -95,9 +110,11 @@ final class AppModel {
         access = await library.requestAccess()
     }
 
-    func play(_ item: VideoItem, in list: [VideoItem]) {
+    /// The tapped video plays now and Favourites, in their order, are what follows. A tapped
+    /// favourite starts the list from its own slot; anything else goes in front of the list.
+    func play(_ item: VideoItem) {
         zoomSourceID = item.id
-        engine.play(item, in: list)
+        engine.play(item, in: favourites)
         isPlayerPresented = true
     }
 
@@ -115,6 +132,55 @@ final class AppModel {
         isPlayerPresented = false
     }
 
+    // MARK: Favourites
+
+    func isFavourite(_ videoID: String) -> Bool {
+        favouriteIDs.contains(videoID)
+    }
+
+    func toggleFavourite(_ item: VideoItem) {
+        let starred = store.toggleFavourite(item.id)
+        favouriteIDs = store.favourites
+        if starred {
+            favourites.append(Self.asFavourite(item))
+        } else {
+            favourites.removeAll { $0.id == item.id }
+        }
+        log.log("favourites.\(starred ? "add" : "remove") \(item.id) count=\(favouriteIDs.count)")
+        noteStoreError()
+    }
+
+    /// Drops `videoID` into the slot `targetID` occupies; the target shifts to make room.
+    /// Resolved by id, not grid index, because the grid may be missing unlisted favourites.
+    func moveFavourite(_ videoID: String, onto targetID: String) {
+        guard videoID != targetID, let index = store.favourites.firstIndex(of: targetID) else { return }
+        store.moveFavourite(videoID, to: index)
+        favouriteIDs = store.favourites
+        favourites = Self.ordered(favourites, by: favouriteIDs)
+        noteStoreError()
+    }
+
+    func refreshFavourites() async {
+        let all = await library.allVideos()
+        let byID = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        favourites = store.favourites.compactMap { byID[$0] }.map(Self.asFavourite)
+    }
+
+    private static func asFavourite(_ item: VideoItem) -> VideoItem {
+        var copy = item
+        copy.albumTitle = favouritesTitle
+        return copy
+    }
+
+    private static func ordered(_ items: [VideoItem], by ids: [String]) -> [VideoItem] {
+        let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return ids.compactMap { byID[$0] }
+    }
+
+    private func noteStoreError() {
+        if let error = store.lastWriteError { log.log("store.write.failed \(error)") }
+    }
+
     private func applyInitialScreen() {
         switch launch.initialScreen {
         case "permission":
@@ -125,7 +191,10 @@ final class AppModel {
                 guard let self else { return }
                 let items = await library.allVideos()
                 guard let first = items.first else { return }
-                play(first, in: items)
+                // Every fixture video rather than Favourites: the shot needs a full queue.
+                zoomSourceID = first.id
+                engine.play(first, in: items)
+                isPlayerPresented = true
                 if wantsQueue {
                     isQueuePresented = true
                 }

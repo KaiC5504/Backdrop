@@ -69,7 +69,7 @@ final class PhotosLibrary: NSObject, LibrarySource {
         favourites.enumerateObjects { collection, _, _ in
             let count = PHAsset.fetchAssets(in: collection, options: Self.videosNewestFirst).count
             if count > 0 {
-                out.append(AlbumItem(id: collection.localIdentifier, title: "Favorites", kind: .favorites, count: count))
+                out.append(AlbumItem(id: collection.localIdentifier, title: "Photos Favorites", kind: .photosFavorites, count: count))
             }
         }
 
